@@ -1,0 +1,26 @@
+repos:
+  # Secret scanning on staged changes. Pinned version is refreshed with `pre-commit autoupdate`.
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.0
+    hooks:
+      - id: gitleaks
+
+  # Run our own tools through uv so versions come from uv.lock (no second copy to drift).
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: ruff check
+        entry: uv run ruff check --fix
+        language: system
+        types: [python]
+      - id: ruff-format
+        name: ruff format
+        entry: uv run ruff format
+        language: system
+        types: [python]
+      - id: mypy
+        name: mypy
+        entry: uv run mypy
+        language: system
+        types: [python]
+        pass_filenames: false  # mypy reads `packages` from pyproject.toml

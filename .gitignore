@@ -1,0 +1,31 @@
+# Secrets: never commit. Use .env.example for the template.
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+dist/
+build/
+
+# Tool caches
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+
+# Redline run output (results can contain model responses; keep local by default)
+runs/
+
+# Personal working files (not part of the public project)
+CLAUDE.md
+PROGRESS.md
+.claude/
+docs/PLAN.md
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
