@@ -20,3 +20,19 @@ I also set up pre-commit hooks: Ruff, mypy and gitleaks run automatically on eve
 and stop it if something fails. Gitleaks scans for secrets, and I tested it against a fake
 token in a throwaway repo to confirm it blocks the commit. The hooks only run on my machine,
 so CI will repeat the same checks later.
+
+A lesson from this step: a web search gave me a gitleaks version (v8.30.1) that doesn't
+exist. `pre-commit autoupdate` checked the real repo and pinned v8.30.0 instead. From now
+on I verify versions and APIs against the official source, not just a search result.
+
+## 1.1: Core Pydantic models
+I made the core models (`Attack`, `TargetResponse`, `DetectionResult`, `RunResult`) frozen
+and strict: unknown keys are rejected and nothing can be changed after creation. Attack
+results are evidence, so they shouldn't be editable, and a typo in a YAML key should fail
+loudly instead of being ignored. I used tuples instead of lists for fields like `tags`,
+because `frozen=True` only blocks reassigning a field, not `tags.append(...)`. I also
+turned on the Pydantic mypy plugin so mypy checks model constructors the same way Pydantic
+checks them at runtime. `triggered=True` always means "the attack succeeded", and
+`succeeded` is computed from the detections instead of stored, so it can't disagree with
+them. `RunResult` already carries the model name, timestamp, config hash and seed so runs
+can be reproduced later.

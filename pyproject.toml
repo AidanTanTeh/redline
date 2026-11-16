@@ -6,7 +6,9 @@ readme = "README.md"
 license = "MIT"
 authors = [{ name = "Aidan E Shin Tan Teh" }]
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "pydantic>=2.14.3",
+]
 
 [dependency-groups]
 dev = [
@@ -48,6 +50,12 @@ select = [
 strict = true
 python_version = "3.12"
 packages = ["redline"]
+plugins = ["pydantic.mypy"]
+
+[tool.pydantic-mypy]
+# Make mypy check model constructors the way Pydantic validates them at runtime.
+init_forbid_extra = true  # unknown kwargs are a type error (matches extra="forbid")
+init_typed = true         # constructor args must match field types, not Any
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
