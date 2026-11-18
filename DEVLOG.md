@@ -74,3 +74,14 @@ of changing it, because configs are frozen and the caller's one should stay as i
 put it inside the package (`redline/demo/`) so it's importable, type-checked and usable from
 the CLI later. So far it has only been tested against a fake server, never a real model;
 that comes in 1.4.
+
+## 1.4: First end-to-end run
+I added `finish_reason` to `TargetResponse` so a reply that was cut off at the token limit
+can be told apart from a model that finished and refused. Without it, an empty answer would
+look like a failed attack and quietly make the attack success rate look lower than it is.
+Ollama ignored `think: false` on its OpenAI-style endpoint, but `reasoning_effort: "none"`
+turned qwen3's thinking off, so the first run could finish in seconds. The catch is that
+every result so far describes "qwen3:8b with thinking off", so I'll record that setting with
+results and compare thinking on and off later. The first real run (one blunt attack) was
+refused and the canary did not leak. That proves the pipeline works against a real model,
+but it is one attempt, not an attack success rate.
