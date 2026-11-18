@@ -36,3 +36,24 @@ checks them at runtime. `triggered=True` always means "the attack succeeded", an
 `succeeded` is computed from the detections instead of stored, so it can't disagree with
 them. `RunResult` already carries the model name, timestamp, config hash and seed so runs
 can be reproduced later.
+
+## 1.2: Target interface and OpenAI-compatible adapter
+I defined `Target` as a `Protocol`, so any class with a `name` and an async `send(prompt)`
+counts as a target without inheriting from anything. That lets Headway plug its own classes
+into Redline without importing Redline's base classes. The first adapter talks to Ollama and
+Gemini through the OpenAI-style `/chat/completions` API. Its config stores the *name* of the
+env var that holds the API key, never the key, and the adapter only reads the key at the
+moment it sends a request, so a printed or saved config can't leak it. I left retries and
+rate-limit handling out of the adapter on purpose; the runner (3.1) will own them.
+
+I added a `reasoning` field to `TargetResponse` and keep qwen3's thinking text out of `text`,
+so detectors judge what a user would actually see. I checked my own Ollama: it sends thinking
+in a separate `reasoning` field, and the adapter handles that, `<think>` tags, and a reply
+cut off mid-thought. The adapter is tested against a fake server, but a full real reply never
+finished because qwen3 is slow here (a few tokens per second) and my live call timed out.
+Open problem for 1.4: if thinking uses up the token limit, `text` is empty, and a detector
+would read that as "attack failed". That would quietly make the attack success rate look
+lower than it really is, so I need to record why a reply stopped, or turn thinking down.
+I tried turning thinking off with `think: false` in the request, but Ollama's OpenAI-style
+endpoint ignored it (qwen3 still thought and hit the token cap), so that fix isn't a
+one-liner. I'll decide in 1.4 how to handle it, with real run numbers to go on.
