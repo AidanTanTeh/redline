@@ -90,6 +90,12 @@ def test_response_rejects_negative_latency() -> None:
         TargetResponse(text="x", model="m", latency_ms=-1)
 
 
+def test_response_reasoning_is_optional_and_defaults_to_none() -> None:
+    assert make_response().reasoning is None
+    thought = TargetResponse(text="hi", reasoning="user greeted me", model="m", latency_ms=1)
+    assert thought.reasoning == "user greeted me"
+
+
 # --- DetectionResult --------------------------------------------------------
 
 

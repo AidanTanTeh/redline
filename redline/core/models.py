@@ -48,7 +48,10 @@ class ToolCall(RedlineModel):
 class TargetResponse(RedlineModel):
     """Everything a Target returns for one prompt."""
 
+    # The final answer only. Detectors judge this, because it's what a user would see.
     text: str
+    # Model "thinking" (e.g. qwen3's <think> block), kept for debugging but never detected on.
+    reasoning: str | None = None
     model: str = Field(min_length=1)
     latency_ms: float = Field(ge=0)
     tool_calls: tuple[ToolCall, ...] = ()
