@@ -54,6 +54,10 @@ class TargetResponse(RedlineModel):
     reasoning: str | None = None
     model: str = Field(min_length=1)
     latency_ms: float = Field(ge=0)
+    # Why generation stopped, as the server reports it: "stop" = finished normally,
+    # "length" = hit the token cap (the reply may be cut off, so an empty `text` means
+    # "unknown", not "the attack failed"). None if the server didn't say.
+    finish_reason: str | None = None
     tool_calls: tuple[ToolCall, ...] = ()
 
 

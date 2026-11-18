@@ -96,6 +96,12 @@ def test_response_reasoning_is_optional_and_defaults_to_none() -> None:
     assert thought.reasoning == "user greeted me"
 
 
+def test_response_finish_reason_is_optional_and_defaults_to_none() -> None:
+    assert make_response().finish_reason is None
+    cut_off = TargetResponse(text="", model="m", latency_ms=1, finish_reason="length")
+    assert cut_off.finish_reason == "length"
+
+
 # --- DetectionResult --------------------------------------------------------
 
 

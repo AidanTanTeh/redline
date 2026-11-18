@@ -10,9 +10,16 @@ from redline.targets import OpenAICompatConfig, OpenAICompatTarget, Target
 Handler = Callable[[httpx.Request], httpx.Response]
 
 
-def reply(message: dict[str, Any], model: str | None = "server-model") -> httpx.Response:
+def reply(
+    message: dict[str, Any],
+    model: str | None = "server-model",
+    finish_reason: str | None = None,
+) -> httpx.Response:
     """A fake /chat/completions reply wrapping one assistant message."""
-    data: dict[str, Any] = {"choices": [{"message": message}]}
+    choice: dict[str, Any] = {"message": message}
+    if finish_reason is not None:
+        choice["finish_reason"] = finish_reason
+    data: dict[str, Any] = {"choices": [choice]}
     if model is not None:
         data["model"] = model
     return httpx.Response(200, json=data)
@@ -130,7 +137,23 @@ async def test_plain_response() -> None:
     assert response.reasoning is None
     assert response.model == "server-model"
     assert response.latency_ms >= 0
+    assert response.finish_reason is None  # the fake server didn't send one
     assert response.tool_calls == ()
+
+
+@pytest.mark.parametrize("reason", ["stop", "length"])
+async def test_finish_reason_is_recorded(reason: str) -> None:
+    target = make_target(lambda _: reply({"content": "hi"}, finish_reason=reason))
+    assert (await target.send("a")).finish_reason == reason
+
+
+async def test_cut_off_thinking_is_distinguishable_from_a_real_empty_answer() -> None:
+    # Thinking used up the token cap: no answer yet, but finish_reason says why.
+    message = {"content": "", "reasoning": "hmm, let me think..."}
+    target = make_target(lambda _: reply(message, finish_reason="length"))
+    response = await target.send("a")
+    assert response.text == ""
+    assert response.finish_reason == "length"
 
 
 async def test_model_falls_back_to_configured_when_server_omits_it() -> None:

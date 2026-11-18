@@ -121,7 +121,8 @@ class OpenAICompatTarget:
         response.raise_for_status()
         data = response.json()
         try:
-            message = data["choices"][0]["message"]
+            choice = data["choices"][0]
+            message = choice["message"]
             text, reasoning = _split_reasoning(
                 message.get("content") or "",
                 message.get("reasoning") or message.get("reasoning_content"),
@@ -135,5 +136,6 @@ class OpenAICompatTarget:
             reasoning=reasoning,
             model=data.get("model") or self._config.model,
             latency_ms=latency_ms,
+            finish_reason=choice.get("finish_reason"),
             tool_calls=tool_calls,
         )
