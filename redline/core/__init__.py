@@ -1,6 +1,7 @@
 """Redline core: the data models shared by every pipeline stage."""
 
 from redline.core.models import (
+    OWASP_LLM_2026,
     Attack,
     AttackCategory,
     DetectionResult,
@@ -11,6 +12,7 @@ from redline.core.models import (
 )
 
 __all__ = [
+    "OWASP_LLM_2026",
     "Attack",
     "AttackCategory",
     "DetectionResult",

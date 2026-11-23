@@ -4,6 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from redline.core import (
+    OWASP_LLM_2026,
     Attack,
     AttackCategory,
     DetectionResult,
@@ -61,6 +62,17 @@ def test_attack_round_trips_through_dict_and_json() -> None:
 def test_attack_rejects_bad_input(override: dict[str, Any]) -> None:
     with pytest.raises(ValidationError):
         Attack.model_validate({**VALID_ATTACK, **override})
+
+
+def test_every_category_has_an_owasp_id() -> None:
+    # Adding an AttackCategory without a mapping would break `Attack.owasp_id` at runtime.
+    assert set(OWASP_LLM_2026) == set(AttackCategory)
+
+
+def test_attack_owasp_id_comes_from_its_category() -> None:
+    assert Attack(**VALID_ATTACK).owasp_id == "LLM01:2026"
+    leak = Attack(**{**VALID_ATTACK, "category": "system_prompt_leakage"})
+    assert leak.owasp_id == "LLM08:2026"
 
 
 def test_attack_is_frozen() -> None:

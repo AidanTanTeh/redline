@@ -1,7 +1,9 @@
 """Core data models passed between Redline's pipeline stages."""
 
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from enum import StrEnum
+from types import MappingProxyType
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -14,13 +16,28 @@ class RedlineModel(BaseModel):
 
 
 class AttackCategory(StrEnum):
-    """What kind of weakness an attack probes. OWASP IDs get mapped on in step 2.1."""
+    """What kind of weakness an attack probes. See OWASP_LLM_2026 for the OWASP mapping."""
 
     DIRECT_INJECTION = "direct_injection"
     INDIRECT_INJECTION = "indirect_injection"
     SYSTEM_PROMPT_LEAKAGE = "system_prompt_leakage"
     SENSITIVE_INFO_DISCLOSURE = "sensitive_info_disclosure"
     EXCESSIVE_AGENCY = "excessive_agency"
+
+
+# OWASP Top 10 for LLM Applications, 2026 edition (checked on genai.owasp.org, Nov 2026).
+# In 2026, system prompt extraction falls under LLM08 "Hidden Context Exposure"; the 2025
+# edition had a separate LLM07 "System Prompt Leakage". MappingProxyType makes the dict
+# read-only, the same idea as tuples instead of lists elsewhere in this file.
+OWASP_LLM_2026: Mapping[AttackCategory, str] = MappingProxyType(
+    {
+        AttackCategory.DIRECT_INJECTION: "LLM01:2026",  # Prompt Injection
+        AttackCategory.INDIRECT_INJECTION: "LLM01:2026",  # Prompt Injection
+        AttackCategory.SYSTEM_PROMPT_LEAKAGE: "LLM08:2026",  # Hidden Context Exposure
+        AttackCategory.SENSITIVE_INFO_DISCLOSURE: "LLM02:2026",  # Sensitive Information Disclosure
+        AttackCategory.EXCESSIVE_AGENCY: "LLM03:2026",  # Excessive Agency
+    }
+)
 
 
 class Attack(RedlineModel):
@@ -34,6 +51,11 @@ class Attack(RedlineModel):
     description: str = ""
     # tuple, not list: `frozen=True` blocks `attack.tags = ...` but not `attack.tags.append(...)`.
     tags: tuple[str, ...] = ()
+
+    @property
+    def owasp_id(self) -> str:
+        """OWASP LLM Top 10 (2026) ID for this attack's category, e.g. "LLM01:2026"."""
+        return OWASP_LLM_2026[self.category]
 
 
 class ToolCall(RedlineModel):
