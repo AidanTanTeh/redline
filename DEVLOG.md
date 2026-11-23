@@ -85,3 +85,19 @@ every result so far describes "qwen3:8b with thinking off", so I'll record that 
 results and compare thinking on and off later. The first real run (one blunt attack) was
 refused and the canary did not leak. That proves the pipeline works against a real model,
 but it is one attempt, not an attack success rate.
+
+## 2.1: Attack corpus and loader
+Attacks now live in YAML files inside the package instead of in code, so the corpus can grow
+without touching Python and ships with the library. Every file goes through the same Pydantic
+`Attack` model, so a typo'd key or a bad category fails loudly with the file name instead of
+silently skewing results. `load_corpus()` also returns a hash of the files' names and bytes;
+later every result will record it, so "ASR 12%" always says which attacks produced it, and the
+hash can't go stale the way a hand-bumped version number could.
+
+I shipped 20 attacks in 3 categories, not the planned ~30 in 5. Indirect injection and
+excessive agency need a fake retrieved document and a fake `send_email` tool that don't exist
+until 2.3 and 2.4, so I'll add those attacks with their fields then, rather than guess the
+schema now. Each attack maps to the 2026 OWASP LLM Top 10 (I checked the list on OWASP's site;
+system prompt extraction now sits under LLM08 "Hidden Context Exposure"). None of the attacks
+has been run against a model yet, so there is no attack success rate; that needs the detectors
+in 2.2 and the runner in 3.1.
