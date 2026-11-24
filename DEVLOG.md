@@ -133,3 +133,13 @@ showed the detectors work on a real reply, but VulnBot refused again, so I have 
 and the detectors have known gaps (look-alike letters from other alphabets, wrongly encoded
 base64, ROT13, paraphrased leaks), which I wrote in the code instead of claiming coverage I
 don't have.
+
+One more thing turned up after the first draft. I asked why the canary needs a public prefix
+if it never changes, and testing it showed that without `public_prefix` the 13 public
+characters count toward the fragment threshold, so only 3 secret characters were enough to
+trigger the 0.6 "fragment" result, which is far weaker than its label claims. I had also
+described the prefix's purpose wrongly (the prefix alone never triggered either way); the
+real effect is on the threshold. The default is `""`, so forgetting the option silently
+weakens the check. I didn't fix it in 2.2 because the proper fix touches VulnBot and the
+runner (the target should hand over its canary and prefix together so callers can't forget
+it), so I put it in the 3.1 notes.
