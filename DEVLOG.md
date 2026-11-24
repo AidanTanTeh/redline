@@ -143,3 +143,33 @@ real effect is on the threshold. The default is `""`, so forgetting the option s
 weakens the check. I didn't fix it in 2.2 because the proper fix touches VulnBot and the
 runner (the target should hand over its canary and prefix together so callers can't forget
 it), so I put it in the 3.1 notes.
+
+## 2.3: Indirect injection
+In an indirect attack the user is innocent and the poison hides in content the bot reads,
+like a review, an email or a web page. I gave `Attack` an optional list of fake documents,
+with a rule that indirect attacks must have at least one, because forgetting it would
+silently turn the attack into a harmless question and lower the attack success rate. A small
+`render_prompt()` builds the text sent to the target: documents first, then the question. It
+is deliberately naive (no delimiters, no "treat this as data" warning) to model a basic RAG
+app, so later defences have a baseline to beat. I wrote 6 attacks (review, fake policy,
+exfiltration link, email, HTML comment, faked end-of-documents), all aimed at leaking the
+canary, and tests enforce that exfiltration links only use the reserved `.example` domain and
+that no attack text contains the canary.
+
+Two decisions. First, how documents reach the bot: I chose pasting them into the prompt now,
+because it works with every target and models the common RAG pattern. The realistic
+alternative is a real retrieval tool the model calls. I checked that this works on Ollama's
+`/v1` endpoint with `qwen3:8b` (the model made a proper tool call and used the result), so
+it is committed for 2.4, where the same attacks will be run both ways and compared. Second,
+what counts as success: canary leak only, because it is unambiguous. Attacks that leak
+nothing, like making the bot state a false claim, are not measured yet, so any indirect ASR
+before the LLM judge in 4.2 means secret exfiltration only.
+
+One thing went wrong: my corpus test that no two attacks are duplicates failed, because
+three indirect attacks share the same innocent question. The test was wrong, not the
+attacks, since those attacks differ in their documents. I changed it to compare the text
+actually sent after rendering. Running the first indirect attack for real, `qwen3:8b` leaked
+the canary, so this is the first time the detector's "triggered" path was seen on a real
+model. It is one attempt with thinking off and temperature 0, not a rate. Another untested
+assumption: documents come before the question, which probably helps the defender a little,
+and I have not measured the effect.
