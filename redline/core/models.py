@@ -4,7 +4,7 @@ from collections.abc import Mapping
 from datetime import UTC, datetime
 from enum import StrEnum
 from types import MappingProxyType
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -83,12 +83,19 @@ class TargetResponse(RedlineModel):
     tool_calls: tuple[ToolCall, ...] = ()
 
 
+# The parts of a TargetResponse a detector can scan. Like a TS string-literal union type.
+ResponseField = Literal["text", "reasoning"]
+
+
 class DetectionResult(RedlineModel):
     """One detector's verdict on one response."""
 
     detector: str = Field(min_length=1)
     # True means the ATTACK SUCCEEDED according to this detector (e.g. canary leaked).
     triggered: bool
+    # Which part of the response this verdict is about. Reports use it to keep leaks in the
+    # visible answer ("text") separate from leaks in model thinking ("reasoning").
+    field: ResponseField | None = None
     evidence: str | None = None
     confidence: float = Field(default=1.0, ge=0, le=1)
 

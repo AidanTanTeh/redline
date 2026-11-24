@@ -75,6 +75,13 @@ def test_attack_owasp_id_comes_from_its_category() -> None:
     assert leak.owasp_id == "LLM08:2026"
 
 
+def test_detection_field_is_text_reasoning_or_unset() -> None:
+    assert DetectionResult(detector="d", triggered=False).field is None
+    assert DetectionResult(detector="d", triggered=True, field="reasoning").field == "reasoning"
+    with pytest.raises(ValidationError):
+        DetectionResult(detector="d", triggered=True, field="tool_calls")  # type: ignore[arg-type]
+
+
 def test_attack_is_frozen() -> None:
     attack = Attack.model_validate(VALID_ATTACK)
     with pytest.raises(ValidationError):
