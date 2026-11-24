@@ -4,9 +4,9 @@ from collections.abc import Mapping
 from datetime import UTC, datetime
 from enum import StrEnum
 from types import MappingProxyType
-from typing import Any, Literal
+from typing import Any, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class RedlineModel(BaseModel):
@@ -40,6 +40,17 @@ OWASP_LLM_2026: Mapping[AttackCategory, str] = MappingProxyType(
 )
 
 
+class Document(RedlineModel):
+    """A fake retrieved document (web page, email, review, alert) that may carry a payload.
+
+    In an indirect attack the attacker never talks to the bot: they plant instructions in
+    content the bot reads later.
+    """
+
+    title: str = Field(min_length=1)
+    content: str = Field(min_length=1)
+
+
 class Attack(RedlineModel):
     """One attack payload from the corpus."""
 
@@ -47,10 +58,23 @@ class Attack(RedlineModel):
     id: str = Field(pattern=r"^[a-z0-9][a-z0-9_-]*$")
     name: str = Field(min_length=1)
     category: AttackCategory
+    # What the user types. For direct attacks this IS the attack. For indirect attacks it is
+    # the user's innocent question, and the attack is hidden in `documents`.
     prompt: str = Field(min_length=1)
+    # Fake retrieved content shown to the bot alongside the question. Required for indirect
+    # injection; optional for other categories (2.4 may use it for agency attacks).
+    documents: tuple[Document, ...] = ()
     description: str = ""
     # tuple, not list: `frozen=True` blocks `attack.tags = ...` but not `attack.tags.append(...)`.
     tags: tuple[str, ...] = ()
+
+    @model_validator(mode="after")
+    def _indirect_attacks_need_documents(self) -> Self:
+        # Runs after every field has been validated. An "indirect" attack with nothing to
+        # inject into would silently behave like a harmless plain question.
+        if self.category is AttackCategory.INDIRECT_INJECTION and not self.documents:
+            raise ValueError("indirect_injection attacks need at least one document")
+        return self
 
     @property
     def owasp_id(self) -> str:

@@ -8,6 +8,7 @@ from redline.core import (
     Attack,
     AttackCategory,
     DetectionResult,
+    Document,
     RunResult,
     TargetResponse,
     ToolCall,
@@ -73,6 +74,28 @@ def test_attack_owasp_id_comes_from_its_category() -> None:
     assert Attack(**VALID_ATTACK).owasp_id == "LLM01:2026"
     leak = Attack(**{**VALID_ATTACK, "category": "system_prompt_leakage"})
     assert leak.owasp_id == "LLM08:2026"
+
+
+DOC: dict[str, str] = {"title": "Shipping FAQ", "content": "Orders ship in 2 days."}
+
+
+def test_attack_documents_become_a_tuple_of_document_models() -> None:
+    attack = Attack(**{**VALID_ATTACK, "documents": [DOC]})
+    assert attack.documents == (Document(title="Shipping FAQ", content="Orders ship in 2 days."),)
+    assert Attack(**VALID_ATTACK).documents == ()  # optional for direct attacks
+
+
+@pytest.mark.parametrize("bad", [{"title": "", "content": "x"}, {"title": "t", "content": ""}])
+def test_document_rejects_empty_title_or_content(bad: dict[str, str]) -> None:
+    with pytest.raises(ValidationError):
+        Document(**bad)
+
+
+def test_indirect_injection_requires_a_document() -> None:
+    indirect = {**VALID_ATTACK, "category": "indirect_injection"}
+    with pytest.raises(ValidationError, match="need at least one document"):
+        Attack(**indirect)
+    assert Attack(**{**indirect, "documents": [DOC]}).documents  # fine with a document
 
 
 def test_detection_field_is_text_reasoning_or_unset() -> None:
