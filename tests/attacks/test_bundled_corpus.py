@@ -2,21 +2,19 @@ import re
 from collections import Counter
 
 from redline.attacks import load_corpus, render_prompt
-from redline.core import AttackCategory
-from redline.demo import CANARY_PREFIX
-
-# Categories shipped so far. Excessive agency arrives in 2.4.
-EXPECTED_NOW = {
-    AttackCategory.DIRECT_INJECTION,
-    AttackCategory.INDIRECT_INJECTION,
-    AttackCategory.SYSTEM_PROMPT_LEAKAGE,
-    AttackCategory.SENSITIVE_INFO_DISCLOSURE,
-}
+from redline.core import Attack, AttackCategory
+from redline.demo import CANARY_PREFIX, search_docs_tool, send_email_tool
 
 
-def test_bundled_corpus_covers_each_current_category() -> None:
+def everything_an_attack_says(attack: Attack) -> list[str]:
+    """Every piece of text in an attack that could contain a URL or address."""
+    wanted = attack.success_tool_call.arguments.values() if attack.success_tool_call else ()
+    return [attack.prompt, *(d.content for d in attack.documents), *wanted]
+
+
+def test_bundled_corpus_covers_every_category() -> None:
     counts = Counter(a.category for a in load_corpus().attacks)
-    for category in EXPECTED_NOW:
+    for category in AttackCategory:
         assert counts[category] >= 1, f"no attacks for {category}"
 
 
@@ -33,6 +31,7 @@ def test_each_file_only_holds_its_own_category() -> None:
     # Keeps files tidy: spl-* ids are system prompt leakage, sid-* sensitive info, di-* direct.
     prefixes = {
         "di-": AttackCategory.DIRECT_INJECTION,
+        "ea-": AttackCategory.EXCESSIVE_AGENCY,
         "ii-": AttackCategory.INDIRECT_INJECTION,
         "spl-": AttackCategory.SYSTEM_PROMPT_LEAKAGE,
         "sid-": AttackCategory.SENSITIVE_INFO_DISCLOSURE,
@@ -58,11 +57,34 @@ def test_no_attack_text_contains_the_canary_prefix() -> None:
         assert not any(CANARY_PREFIX.lower() in t.lower() for t in texts), attack.id
 
 
-def test_any_url_in_the_corpus_uses_the_reserved_example_domain() -> None:
-    # Safety: payloads must never point at a real server (RFC 2606 reserves `.example`).
-    host = re.compile(r"https?://([^/\s)?#]+)")
+def test_any_url_or_email_address_uses_the_reserved_example_domain() -> None:
+    # Safety: payloads must never point at a real server or mailbox (RFC 2606 reserves
+    # `.example`). Covers URLs, email addresses, and the addresses attacks wait for.
+    url_host = re.compile(r"https?://([^/\s)?#]+)")
+    email_host = re.compile(r"[\w.+-]+@([\w.-]+)")
     for attack in load_corpus().attacks:
-        texts = [attack.prompt, *(d.content for d in attack.documents)]
-        for text in texts:
-            for found in host.findall(text):
-                assert found.endswith(".example"), f"{attack.id}: real-looking host {found}"
+        for text in everything_an_attack_says(attack):
+            for found in [*url_host.findall(text), *email_host.findall(text)]:
+                host = found.rstrip(".")
+                assert host.endswith(".example"), f"{attack.id}: real-looking host {found}"
+
+
+def test_every_agency_attack_names_a_tool_vulnbot_really_has() -> None:
+    # A typo like `send_mail` would make the attack impossible to win and quietly lower ASR.
+    tools = {send_email_tool().name, search_docs_tool(()).name}
+    agency = [a for a in load_corpus().attacks if a.category is AttackCategory.EXCESSIVE_AGENCY]
+    assert agency
+    for attack in agency:
+        assert attack.success_tool_call is not None, attack.id
+        assert attack.success_tool_call.tool in tools, attack.id
+        assert attack.needs_tools, attack.id
+
+
+def test_each_success_address_is_unique_so_one_attack_cannot_trigger_another() -> None:
+    wanted = [
+        value
+        for a in load_corpus().attacks
+        if a.success_tool_call
+        for value in a.success_tool_call.arguments.values()
+    ]
+    assert len(set(wanted)) == len(wanted)
