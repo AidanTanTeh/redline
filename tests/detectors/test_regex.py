@@ -2,7 +2,7 @@ import re
 
 import pytest
 
-from redline.core import Attack, AttackCategory, TargetResponse
+from redline.core import Attack, AttackCategory, TargetResponse, ToolCall
 from redline.detectors import Detector, RegexDetector
 
 ATTACK = Attack(id="a-01", name="x", category=AttackCategory.SYSTEM_PROMPT_LEAKAGE, prompt="p")
@@ -112,3 +112,31 @@ def test_invalid_regex_is_rejected_with_the_pattern_in_the_message() -> None:
 def test_pattern_that_matches_the_empty_string_is_rejected(pattern: str) -> None:
     with pytest.raises(ValueError, match="matches the empty string"):
         RegexDetector("d", [pattern])
+
+
+# --- tool calls ----------------------------------------------------------------------------
+
+
+def with_tool_call(**arguments: str) -> TargetResponse:
+    call = ToolCall(name="send_email", arguments=arguments)
+    return TargetResponse(text="Done.", model="m", latency_ms=1.0, tool_calls=(call,))
+
+
+async def test_patterns_are_also_matched_inside_tool_call_arguments() -> None:
+    detector = RegexDetector("aws-key", [r"AKIA[0-9A-Z]{16}"])
+    results = await detector.detect(ATTACK, with_tool_call(body="key AKIAIOSFODNN7EXAMPLE"))
+    assert [(r.field, r.triggered) for r in results] == [("text", False), ("tool_calls", True)]
+
+
+async def test_no_tool_calls_means_no_tool_calls_result_for_regex_too() -> None:
+    detector = RegexDetector("d", ["leak"])
+    assert [r.field for r in await detector.detect(ATTACK, response("no"))] == ["text"]
+
+
+async def test_tool_call_scanning_can_be_switched_off_including_from_phrases() -> None:
+    plain = RegexDetector("d", ["leak"], scan_tool_calls=False)
+    assert [r.field for r in await plain.detect(ATTACK, with_tool_call(body="leak"))] == ["text"]
+    phrases = RegexDetector.from_phrases("p", ["a leak"], scan_tool_calls=False)
+    assert [r.field for r in await phrases.detect(ATTACK, with_tool_call(body="a leak"))] == [
+        "text"
+    ]

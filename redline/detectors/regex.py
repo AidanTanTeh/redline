@@ -4,8 +4,8 @@ import re
 from collections.abc import Sequence
 from typing import Self
 
-from redline.core import Attack, DetectionResult, ResponseField, TargetResponse
-from redline.detectors.base import field_text
+from redline.core import Attack, DetectionResult, TargetResponse
+from redline.detectors.base import field_text, present_fields, scan_fields
 
 MAX_EVIDENCE_CHARS = 80
 
@@ -19,8 +19,9 @@ class RegexDetector:
     Patterns are YOUR config, not attacker input, but a badly written one (nested quantifiers
     like `(a+)+`) can make matching extremely slow on long text. Keep them simple.
 
-    Scans `text` only by default; `scan_reasoning=True` also scans `reasoning` and reports
-    it as a separate result, for the same reason as `CanaryDetector`.
+    Scans `text` and tool-call arguments by default; `scan_reasoning=True` also scans
+    `reasoning`. Each field is reported as a separate result, for the same reasons as
+    `CanaryDetector` (a response with no tool calls gets no "tool_calls" result).
     """
 
     def __init__(
@@ -31,6 +32,7 @@ class RegexDetector:
         flags: re.RegexFlag = re.IGNORECASE,
         confidence: float = 1.0,
         scan_reasoning: bool = False,
+        scan_tool_calls: bool = True,
     ) -> None:
         if not name:
             raise ValueError("name must not be empty")
@@ -51,9 +53,7 @@ class RegexDetector:
         self._name = name
         self._patterns = tuple(compiled)
         self._confidence = confidence
-        self._fields: tuple[ResponseField, ...] = (
-            ("text", "reasoning") if scan_reasoning else ("text",)
-        )
+        self._fields = scan_fields(reasoning=scan_reasoning, tool_calls=scan_tool_calls)
 
     @classmethod
     def from_phrases(
@@ -64,6 +64,7 @@ class RegexDetector:
         flags: re.RegexFlag = re.IGNORECASE,
         confidence: float = 1.0,
         scan_reasoning: bool = False,
+        scan_tool_calls: bool = True,
     ) -> Self:
         """Build a detector for exact phrases, e.g. sentences from the system prompt.
 
@@ -73,7 +74,12 @@ class RegexDetector:
         """
         patterns = [r"\s+".join(re.escape(word) for word in phrase.split()) for phrase in phrases]
         return cls(
-            name, patterns, flags=flags, confidence=confidence, scan_reasoning=scan_reasoning
+            name,
+            patterns,
+            flags=flags,
+            confidence=confidence,
+            scan_reasoning=scan_reasoning,
+            scan_tool_calls=scan_tool_calls,
         )
 
     @property
@@ -83,7 +89,7 @@ class RegexDetector:
     async def detect(self, attack: Attack, response: TargetResponse) -> tuple[DetectionResult, ...]:
         # `attack` is unused: this detector only cares about what came out, not what was asked.
         results = []
-        for field in self._fields:
+        for field in present_fields(response, self._fields):
             text = field_text(response, field)
             evidence = None
             for regex in self._patterns:
