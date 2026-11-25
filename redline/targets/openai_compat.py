@@ -4,6 +4,7 @@ import json
 import os
 import re
 import time
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 import httpx
@@ -51,9 +52,38 @@ def _split_reasoning(content: str, reasoning_field: str | None) -> tuple[str, st
     return text.strip(), reasoning or None
 
 
+def _call_id(raw: dict[str, Any], index: int) -> str:
+    # Servers normally send an id. If one doesn't, invent a stable one so the conversation
+    # history stays valid (a tool result has to name the call it answers).
+    return str(raw.get("id") or f"call_{index}")
+
+
+def _assistant_message(message: dict[str, Any]) -> dict[str, Any]:
+    """The assistant's turn, rebuilt cleanly so it can be appended to the conversation history.
+
+    Only role/content/tool_calls are kept (not extras like `reasoning`), and each call's
+    `arguments` stays the raw JSON string the model produced, exactly as the API expects it back.
+    """
+    result: dict[str, Any] = {"role": "assistant", "content": message.get("content") or ""}
+    raw_calls = message.get("tool_calls") or []
+    if raw_calls:
+        result["tool_calls"] = [
+            {
+                "id": _call_id(raw, index),
+                "type": "function",
+                "function": {
+                    "name": raw["function"]["name"],
+                    "arguments": raw["function"].get("arguments") or "{}",
+                },
+            }
+            for index, raw in enumerate(raw_calls)
+        ]
+    return result
+
+
 def _parse_tool_calls(raw_calls: list[dict[str, Any]]) -> tuple[ToolCall, ...]:
     calls: list[ToolCall] = []
-    for raw in raw_calls:
+    for index, raw in enumerate(raw_calls):
         function = raw["function"]
         # The API sends arguments as a JSON *string*. Models sometimes emit broken JSON,
         # so keep the raw text instead of crashing the whole run.
@@ -63,8 +93,17 @@ def _parse_tool_calls(raw_calls: list[dict[str, Any]]) -> tuple[ToolCall, ...]:
             arguments = {"_raw": function.get("arguments")}
         if not isinstance(arguments, dict):
             arguments = {"_raw": arguments}
-        calls.append(ToolCall(name=function["name"], arguments=arguments))
+        calls.append(ToolCall(name=function["name"], arguments=arguments, id=_call_id(raw, index)))
     return tuple(calls)
+
+
+class ChatTurn(RedlineModel):
+    """One model turn: what it said, plus the message to append to the history."""
+
+    response: TargetResponse
+    # {"role": "assistant", "content": ..., "tool_calls": [...]}. Append it, then append one
+    # {"role": "tool", "tool_call_id": ..., "content": ...} per call, then call chat() again.
+    assistant_message: dict[str, Any]
 
 
 class OpenAICompatTarget:
@@ -89,25 +128,47 @@ class OpenAICompatTarget:
             raise RuntimeError(f"Environment variable {env_name} is not set (or is empty).")
         return {"Authorization": f"Bearer {key}"}
 
-    def _body(self, prompt: str) -> dict[str, Any]:
-        cfg = self._config
-        messages: list[dict[str, str]] = []
-        if cfg.system_prompt is not None:
-            messages.append({"role": "system", "content": cfg.system_prompt})
+    def start_messages(self, prompt: str) -> list[dict[str, Any]]:
+        """The opening of a conversation: the configured system prompt (if any), then the user."""
+        messages: list[dict[str, Any]] = []
+        if self._config.system_prompt is not None:
+            messages.append({"role": "system", "content": self._config.system_prompt})
         messages.append({"role": "user", "content": prompt})
+        return messages
+
+    def _body(
+        self, messages: Sequence[Mapping[str, Any]], tools: Sequence[Mapping[str, Any]]
+    ) -> dict[str, Any]:
+        cfg = self._config
         body: dict[str, Any] = {
             "model": cfg.model,
-            "messages": messages,
+            "messages": list(messages),
             "temperature": cfg.temperature,
         }
+        if tools:
+            body["tools"] = list(tools)
         if cfg.seed is not None:
             body["seed"] = cfg.seed
         return body | cfg.extra_body
 
     async def send(self, prompt: str) -> TargetResponse:
+        """One prompt in, one response out (a single model turn, no tools)."""
+        turn = await self.chat(self.start_messages(prompt))
+        return turn.response
+
+    async def chat(
+        self,
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]] = (),
+    ) -> ChatTurn:
+        """One model turn over a full conversation, optionally offering tools.
+
+        `messages` is sent exactly as given (the caller owns the history, including any system
+        message). `tools` uses the OpenAI schema: {"type": "function", "function": {...}}.
+        """
         url = f"{self._config.base_url.rstrip('/')}/chat/completions"
         headers = self._headers()
-        body = self._body(prompt)
+        body = self._body(messages, tools)
         timeout = self._config.timeout_s
 
         start = time.perf_counter()
@@ -131,7 +192,7 @@ class OpenAICompatTarget:
         except (KeyError, IndexError, TypeError, AttributeError) as exc:
             raise ValueError("Unexpected response shape from /chat/completions") from exc
 
-        return TargetResponse(
+        target_response = TargetResponse(
             text=text,
             reasoning=reasoning,
             model=data.get("model") or self._config.model,
@@ -139,3 +200,4 @@ class OpenAICompatTarget:
             finish_reason=choice.get("finish_reason"),
             tool_calls=tool_calls,
         )
+        return ChatTurn(response=target_response, assistant_message=_assistant_message(message))

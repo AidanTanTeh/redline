@@ -204,6 +204,118 @@ async def test_malformed_tool_arguments_are_kept_raw_not_crashed() -> None:
     assert response.tool_calls[0].arguments == {"_raw": "{oops"}
 
 
+# --- multi-turn chat with tools ---------------------------------------------
+
+SEARCH_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "search_docs",
+        "description": "Search the knowledge base.",
+        "parameters": {"type": "object", "properties": {"query": {"type": "string"}}},
+    },
+}
+TOOL_CALL_MESSAGE = {
+    "content": None,
+    "tool_calls": [
+        {"id": "call_a", "function": {"name": "search_docs", "arguments": '{"query":"ship"}'}}
+    ],
+}
+
+
+async def test_chat_sends_the_conversation_and_tools_exactly_as_given() -> None:
+    handler, seen = recording_handler({"content": "ok"})
+    history = [
+        {"role": "system", "content": "s"},
+        {"role": "user", "content": "u"},
+        {"role": "tool", "tool_call_id": "call_a", "content": "result"},
+    ]
+    await make_target(handler, system_prompt="IGNORED").chat(history, [SEARCH_TOOL])
+    body = json.loads(seen[0].content)
+    # chat() does not add the configured system prompt: the caller owns the whole history.
+    assert body["messages"] == history
+    assert body["tools"] == [SEARCH_TOOL]
+
+
+async def test_no_tools_key_when_no_tools_are_offered() -> None:
+    handler, seen = recording_handler({"content": "ok"})
+    await make_target(handler).chat([{"role": "user", "content": "u"}])
+    assert "tools" not in json.loads(seen[0].content)
+
+
+def test_start_messages_adds_the_system_prompt_only_when_configured() -> None:
+    plain = OpenAICompatTarget(OpenAICompatConfig(base_url="http://test/v1", model="m"))
+    assert plain.start_messages("hi") == [{"role": "user", "content": "hi"}]
+    with_system = OpenAICompatTarget(
+        OpenAICompatConfig(base_url="http://test/v1", model="m", system_prompt="s")
+    )
+    assert with_system.start_messages("hi") == [
+        {"role": "system", "content": "s"},
+        {"role": "user", "content": "hi"},
+    ]
+
+
+async def test_tool_call_ids_are_kept_and_invented_when_the_server_omits_them() -> None:
+    message = {
+        "content": "",
+        "tool_calls": [
+            {"id": "call_a", "function": {"name": "f", "arguments": "{}"}},
+            {"function": {"name": "g", "arguments": "{}"}},  # no id from the server
+        ],
+    }
+    handler, _ = recording_handler(message)
+    turn = await make_target(handler).chat([{"role": "user", "content": "u"}])
+    assert [c.id for c in turn.response.tool_calls] == ["call_a", "call_1"]
+    ids = [c["id"] for c in turn.assistant_message["tool_calls"]]
+    assert ids == ["call_a", "call_1"]  # history and parsed calls agree
+
+
+async def test_assistant_message_keeps_raw_arguments_and_drops_extra_fields() -> None:
+    message = {**TOOL_CALL_MESSAGE, "reasoning": "private thoughts", "role": "assistant"}
+    handler, _ = recording_handler(message)
+    turn = await make_target(handler).chat([{"role": "user", "content": "u"}])
+    assert turn.assistant_message == {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+            {
+                "id": "call_a",
+                "type": "function",
+                "function": {"name": "search_docs", "arguments": '{"query":"ship"}'},
+            }
+        ],
+    }
+
+
+async def test_plain_reply_has_an_assistant_message_without_tool_calls() -> None:
+    handler, _ = recording_handler({"content": "hello"})
+    turn = await make_target(handler).chat([{"role": "user", "content": "u"}])
+    assert turn.assistant_message == {"role": "assistant", "content": "hello"}
+
+
+async def test_a_tool_round_trip_feeds_the_result_back_in() -> None:
+    # Turn 1: the model asks for a tool. Turn 2: we reply with the result and it answers.
+    replies: list[dict[str, Any]] = [TOOL_CALL_MESSAGE, {"content": "Ships in 2 days."}]
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return reply(replies[len(seen) - 1])
+
+    target = make_target(handler)
+    history = target.start_messages("How long does shipping take?")
+    first = await target.chat(history, [SEARCH_TOOL])
+    assert first.response.tool_calls[0].name == "search_docs"
+
+    history.append(first.assistant_message)
+    history.append({"role": "tool", "tool_call_id": "call_a", "content": "Ships in 2 days."})
+    second = await target.chat(history, [SEARCH_TOOL])
+
+    assert second.response.text == "Ships in 2 days."
+    sent = json.loads(seen[1].content)["messages"]
+    assert [m["role"] for m in sent] == ["user", "assistant", "tool"]
+    assert sent[2]["tool_call_id"] == sent[1]["tool_calls"][0]["id"]
+
+
 # --- errors -----------------------------------------------------------------
 
 
