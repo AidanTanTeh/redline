@@ -12,6 +12,7 @@ from redline.core import (
     RunResult,
     TargetResponse,
     ToolCall,
+    ToolCallMatch,
 )
 
 VALID_ATTACK: dict[str, Any] = {
@@ -102,7 +103,7 @@ def test_detection_field_is_text_reasoning_or_unset() -> None:
     assert DetectionResult(detector="d", triggered=False).field is None
     assert DetectionResult(detector="d", triggered=True, field="reasoning").field == "reasoning"
     with pytest.raises(ValidationError):
-        DetectionResult(detector="d", triggered=True, field="tool_calls")  # type: ignore[arg-type]
+        DetectionResult(detector="d", triggered=True, field="headers")  # type: ignore[arg-type]
 
 
 def test_attack_is_frozen() -> None:
@@ -181,3 +182,35 @@ def test_run_result_rejects_negative_attempt() -> None:
             model="m",
             config_hash="h",
         )
+
+
+# --- tool-abuse attacks -------------------------------------------------------------------
+
+
+def test_tool_call_match_parses_from_plain_dicts() -> None:
+    attack = Attack(
+        **{
+            **VALID_ATTACK,
+            "category": "excessive_agency",
+            "success_tool_call": {"tool": "send_email", "arguments": {"to": "a@evil.example"}},
+        }
+    )
+    assert attack.success_tool_call == ToolCallMatch(
+        tool="send_email", arguments={"to": "a@evil.example"}
+    )
+    assert attack.owasp_id == "LLM03:2026"
+
+
+def test_tool_call_match_needs_a_tool_name_and_any_call_is_allowed_by_default() -> None:
+    with pytest.raises(ValidationError):
+        ToolCallMatch(tool="")
+    assert ToolCallMatch(tool="send_email").arguments == {}
+
+
+def test_excessive_agency_requires_a_success_tool_call() -> None:
+    agency = {**VALID_ATTACK, "category": "excessive_agency"}
+    with pytest.raises(ValidationError, match="need a success_tool_call"):
+        Attack(**agency)
+    assert Attack(**{**agency, "success_tool_call": {"tool": "send_email"}}).success_tool_call
+    # other categories may leave it out
+    assert Attack(**VALID_ATTACK).success_tool_call is None

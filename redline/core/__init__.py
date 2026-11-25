@@ -11,6 +11,7 @@ from redline.core.models import (
     RunResult,
     TargetResponse,
     ToolCall,
+    ToolCallMatch,
 )
 
 __all__ = [
@@ -24,4 +25,5 @@ __all__ = [
     "RunResult",
     "TargetResponse",
     "ToolCall",
+    "ToolCallMatch",
 ]

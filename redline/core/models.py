@@ -51,6 +51,19 @@ class Document(RedlineModel):
     content: str = Field(min_length=1)
 
 
+class ToolCallMatch(RedlineModel):
+    """What a successful tool-abuse attack looks like: this tool, with arguments like these.
+
+    Example (YAML): {tool: send_email, arguments: {to: attacker@evil.example}} means "the
+    attack worked if the bot called send_email with a `to` containing that address".
+    """
+
+    tool: str = Field(min_length=1)
+    # argument name -> text that must appear in that argument's value (case-insensitive).
+    # Empty means "any call to this tool counts". Read-only by convention, like ToolCall.
+    arguments: dict[str, str] = Field(default_factory=dict)
+
+
 class Attack(RedlineModel):
     """One attack payload from the corpus."""
 
@@ -64,6 +77,9 @@ class Attack(RedlineModel):
     # Fake retrieved content shown to the bot alongside the question. Required for indirect
     # injection; optional for other categories (2.4 may use it for agency attacks).
     documents: tuple[Document, ...] = ()
+    # What counts as success for tool-abuse attacks (read by ToolCallDetector). Required for
+    # excessive_agency; other categories may use it too (e.g. an indirect attack that emails).
+    success_tool_call: ToolCallMatch | None = None
     description: str = ""
     # tuple, not list: `frozen=True` blocks `attack.tags = ...` but not `attack.tags.append(...)`.
     tags: tuple[str, ...] = ()
@@ -74,6 +90,14 @@ class Attack(RedlineModel):
         # inject into would silently behave like a harmless plain question.
         if self.category is AttackCategory.INDIRECT_INJECTION and not self.documents:
             raise ValueError("indirect_injection attacks need at least one document")
+        return self
+
+    @model_validator(mode="after")
+    def _agency_attacks_need_a_success_tool_call(self) -> Self:
+        # Without it nothing says what "the tool was abused" means, so the attack could never
+        # be scored as a success.
+        if self.category is AttackCategory.EXCESSIVE_AGENCY and self.success_tool_call is None:
+            raise ValueError("excessive_agency attacks need a success_tool_call")
         return self
 
     @property
@@ -89,6 +113,9 @@ class ToolCall(RedlineModel):
     # JSON-shaped, so it has to be a dict. frozen=True can't stop `.arguments[k] = v`,
     # so treat it as read-only by convention.
     arguments: dict[str, Any] = Field(default_factory=dict)
+    # The server's id for this call. A tool result must quote it so the model knows which call
+    # the result answers. None when a ToolCall is built by hand (e.g. in tests).
+    id: str | None = None
 
 
 class TargetResponse(RedlineModel):
@@ -108,7 +135,7 @@ class TargetResponse(RedlineModel):
 
 
 # The parts of a TargetResponse a detector can scan. Like a TS string-literal union type.
-ResponseField = Literal["text", "reasoning"]
+ResponseField = Literal["text", "reasoning", "tool_calls"]
 
 
 class DetectionResult(RedlineModel):
