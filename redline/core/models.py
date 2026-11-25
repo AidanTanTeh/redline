@@ -101,6 +101,12 @@ class Attack(RedlineModel):
         return self
 
     @property
+    def needs_tools(self) -> bool:
+        """True if success means the target called a tool, so a target with no tools can never
+        be hit. The runner must skip or flag such attacks there, not count them as failures."""
+        return self.success_tool_call is not None
+
+    @property
     def owasp_id(self) -> str:
         """OWASP LLM Top 10 (2026) ID for this attack's category, e.g. "LLM01:2026"."""
         return OWASP_LLM_2026[self.category]

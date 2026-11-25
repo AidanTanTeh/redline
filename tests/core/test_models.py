@@ -207,6 +207,12 @@ def test_tool_call_match_needs_a_tool_name_and_any_call_is_allowed_by_default() 
     assert ToolCallMatch(tool="send_email").arguments == {}
 
 
+def test_needs_tools_is_true_only_when_success_means_a_tool_call() -> None:
+    assert not Attack(**VALID_ATTACK).needs_tools
+    with_tool = {**VALID_ATTACK, "success_tool_call": {"tool": "send_email"}}
+    assert Attack(**with_tool).needs_tools
+
+
 def test_excessive_agency_requires_a_success_tool_call() -> None:
     agency = {**VALID_ATTACK, "category": "excessive_agency"}
     with pytest.raises(ValidationError, match="need a success_tool_call"):
