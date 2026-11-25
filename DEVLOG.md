@@ -173,3 +173,36 @@ the canary, so this is the first time the detector's "triggered" path was seen o
 model. It is one attempt with thinking off and temperature 0, not a rate. Another untested
 assumption: documents come before the question, which probably helps the defender a little,
 and I have not measured the effect.
+
+## 2.4: Excessive agency and tool calling
+Excessive agency means the bot has a powerful tool and gets tricked into using it against the
+user. To test that I had to build real tool calling: the adapter can now send a whole
+conversation plus a list of tools, and VulnBot runs a loop (ask the model, run the tool it
+asks for, send the result back, repeat) with a round cap. The tools are fake on purpose:
+`search_docs` returns the attack's planted documents and `send_email` only says "queued",
+with a test that the tools module has no network code. Detection reads what the model
+*asked* for, not what happened, because asking is the vulnerability. Each attack says in its
+own YAML what success looks like (`success_tool_call`), so one `ToolCallDetector` serves them
+all, and the canary detector now also scans tool-call arguments, because a secret inside an
+email body is a real leak. I wrote 5 attacks (corpus is now 31), all with unique `.example`
+addresses that tests enforce.
+
+I checked first that tool calling really works on Ollama's `/v1` endpoint with `qwen3:8b`,
+and the live runs confirmed it. Several things went wrong or surprised me. Pre-commit's type
+check failed when I committed in pieces, because it hides unstaged edits but not new
+untracked files, so I had to commit in dependency order. One test broke because it used
+`tool_calls` as an "invalid" example after I made it valid. I found two undercounting risks
+and fixed them: a small model's malformed JSON arguments would not have matched, and the
+regex detector ignored tool calls. The biggest finding came from the first live run: in the
+tool channel the bot sometimes never called `search_docs`, so the poisoned document was never
+read and "no effect" really meant "not delivered", which would have been scored as the target
+defending. I added `was_delivered` for that, and a positive control (a harmless "email a
+teammate" request) to prove the bot can use the tool at all, which it did. The live runs also
+showed the canary landing in an email body while the reply text never mentioned it, so a
+text-only scan would have missed it.
+
+What I have not shown: every result is one attempt with thinking off and temperature 0, so
+none of it is a rate. A poisoned-document attack has not yet made the bot send an email (only
+direct requests did), Gemini tool calling is untested, and delivery in the tool channel
+depends on the model choosing to retrieve. These go into the 3.1 runner notes so undelivered
+or tool-less runs are never counted as defended.
