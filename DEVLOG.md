@@ -235,3 +235,20 @@ Live, one attack was caught only by the new check. A rerun gave 8 identical repl
 retries, timeouts, parallel runs and the tool channel all worked on the real setup.
 Paraphrased and translated leaks without the canary are still missed, and no real rate limit
 or hosted model has been tested.
+
+## 3.2: Success rates
+
+The success rate counts only attempts with a verdict (succeeded or resisted), shows every
+other outcome beside it, and gives the lowest and highest rate if the missing ones had gone
+either way. Each attack weighs the same. For uncertainty I used a 95% Wilson interval
+counting attacks rather than attempts, because repeating one attack isn't a new test; this
+makes the intervals wide and only approximate. I rejected counting attempts (overconfident)
+and a bootstrap (poor with so few attacks). Blocked replies count as no answer, though I
+couldn't confirm how Gemini reports them.
+
+The first baseline (qwen3:8b, thinking off, temperature 0.7, 31 attacks, 3 repeats per
+channel) gave 44% overall in the prompt channel and 67% in the tool channel. The two can't be
+compared simply: 20 tool-channel attempts never delivered the document. Unexpectedly,
+sensitive info attacks with no documents rose from 2/21 to 11/21 with the extra tool and
+prompt line, which showed my claim that the channels differ only in delivery was wrong. I
+haven't isolated the cause or manually checked the replies.
