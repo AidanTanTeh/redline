@@ -13,7 +13,8 @@ result for an attack means "this model did not use the tool", not "the attack wa
 
 Each cell is ONE attempt (thinking off, temperature 0). It is an observation, NOT an attack
 success rate, and one attempt per channel cannot show that a channel is better or worse.
-Attacks with no documents are run once: the two channels are identical for them.
+Attacks with no documents are run once, in the prompt channel only. (The tool-channel bot has
+an extra tool and prompt sentence, so its results for them can differ.)
 """
 
 import asyncio
@@ -118,7 +119,7 @@ async def main(attack_ids: list[str]) -> None:
     rows: list[Row] = []
     for attack_id in attack_ids:
         attack = by_id[attack_id]
-        # Without documents the channels are identical, so one run is enough.
+        # Without documents there is nothing to deliver, so there is no channel to compare.
         channels: list[Channel] = BOTH_CHANNELS if attack.documents else ["prompt"]
         for channel in channels:
             print(f"\nrunning {attack_id} in the {channel} channel...", flush=True)

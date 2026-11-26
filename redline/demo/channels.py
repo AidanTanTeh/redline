@@ -4,9 +4,10 @@
 - "tool":   the message is only the user's question; the documents arrive when the bot calls
             its `search_docs` tool (how agent-style apps work).
 
-Both bots can send email. The only real difference is WHERE the document arrives (plus one
-sentence in the system prompt telling the tool-channel bot about `search_docs`), so a
-difference in results is down to the channel, not to one bot having more abilities.
+Both bots can send email. They differ in WHERE the document arrives, and also in that the
+tool-channel bot has the `search_docs` tool and one system-prompt sentence about it. Those two
+extras can change behaviour even for attacks with NO documents (seen in the 3.2 baseline), so
+a difference between channels is not purely down to where the document arrived.
 
 Build a fresh bot per attack: its tools hold that attack's documents and nothing carries over.
 """
