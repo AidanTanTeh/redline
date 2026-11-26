@@ -226,3 +226,12 @@ attacks looked comparable to 31, which I fixed. The first live run (8 attempts, 
 prompt leak without the canary would be missed. Still open: code changes don't alter the
 hash, a crashing detector discards the reply, and the tool channel, retries and parallel runs
 haven't been seen live.
+
+I fixed the leakage gap before measuring any rates: leakage attacks now also check for
+wording from VulnBot's system prompt. Choosing that wording took care. One attack supplies
+the first line of the prompt itself, so phrases found in the attack are skipped, and I
+dropped phrases that an honest refusal could say, including the one I first planned to use.
+Live, one attack was caught only by the new check. A rerun gave 8 identical replies, and
+retries, timeouts, parallel runs and the tool channel all worked on the real setup.
+Paraphrased and translated leaks without the canary are still missed, and no real rate limit
+or hosted model has been tested.
