@@ -12,8 +12,10 @@ from redline.core import Attack, DetectionResult, Outcome, RedlineModel, RunResu
 from redline.runner.retry import AttemptFailed, with_retries
 from redline.runner.trial import RunConfig, TrialFactory, config_hash
 
-# Finish reasons meaning the target never gave a usable answer.
-_NO_ANSWER_REASONS = frozenset({"length", "max_tool_rounds"})
+# Finish reasons meaning the target never gave a usable answer. "content_filter" is the
+# OpenAI-style value for a reply the provider blocked: that isn't evidence the target itself
+# resisted. Not yet seen live, and unconfirmed for Gemini.
+_NO_ANSWER_REASONS = frozenset({"length", "max_tool_rounds", "content_filter"})
 
 
 class RunReport(RedlineModel):
