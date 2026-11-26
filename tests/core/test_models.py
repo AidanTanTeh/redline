@@ -9,6 +9,7 @@ from redline.core import (
     AttackCategory,
     DetectionResult,
     Document,
+    Outcome,
     RunResult,
     TargetResponse,
     ToolCall,
@@ -29,14 +30,32 @@ def make_response() -> TargetResponse:
 
 
 def make_run(*detections: DetectionResult) -> RunResult:
+    # The outcome has to agree with the detections, or the validator rejects the result.
+    triggered = any(d.triggered for d in detections)
     return RunResult(
         attack_id="direct-01",
         attempt=0,
+        target="vulnbot/qwen3:8b/prompt",
+        outcome=Outcome.SUCCEEDED if triggered else Outcome.RESISTED,
         response=make_response(),
         detections=detections,
         model="qwen3:8b",
         config_hash="abc123",
     )
+
+
+def run_fields(**overrides: Any) -> dict[str, Any]:
+    """Valid RunResult fields for a RESISTED attempt; tests override one or two of them."""
+    fields: dict[str, Any] = {
+        "attack_id": "direct-01",
+        "attempt": 0,
+        "target": "vulnbot/qwen3:8b/prompt",
+        "outcome": Outcome.RESISTED,
+        "response": make_response(),
+        "model": "qwen3:8b",
+        "config_hash": "abc123",
+    }
+    return fields | overrides
 
 
 # --- Attack ---------------------------------------------------------------
@@ -173,15 +192,65 @@ def test_timestamp_is_timezone_aware() -> None:
     assert make_run().timestamp.tzinfo is not None
 
 
-def test_run_result_rejects_negative_attempt() -> None:
+@pytest.mark.parametrize("override", [{"attempt": -1}, {"retries": -1}, {"target": ""}])
+def test_run_result_rejects_bad_numbers_and_empty_target(override: dict[str, Any]) -> None:
     with pytest.raises(ValidationError):
-        RunResult(
-            attack_id="x",
-            attempt=-1,
-            response=make_response(),
-            model="m",
-            config_hash="h",
+        RunResult(**run_fields(**override))
+
+
+HIT = DetectionResult(detector="canary", triggered=True, field="text")
+
+
+def test_error_result_needs_a_message_and_no_response() -> None:
+    error = RunResult(
+        **run_fields(outcome=Outcome.ERROR, response=None, error="ReadTimeout: timed out")
+    )
+    assert error.response is None and not error.succeeded
+    with pytest.raises(ValidationError, match="error must be set"):
+        RunResult(**run_fields(outcome=Outcome.ERROR, response=None))
+    with pytest.raises(ValidationError, match="no response"):
+        RunResult(**run_fields(outcome=Outcome.ERROR, error="boom"))  # response still set
+
+
+def test_skipped_result_has_no_response() -> None:
+    assert RunResult(**run_fields(outcome=Outcome.SKIPPED, response=None)).response is None
+    with pytest.raises(ValidationError, match="no response"):
+        RunResult(**run_fields(outcome=Outcome.SKIPPED))
+
+
+@pytest.mark.parametrize(
+    "outcome", [Outcome.RESISTED, Outcome.NO_ANSWER, Outcome.NOT_DELIVERED, Outcome.SUCCEEDED]
+)
+def test_outcomes_that_got_an_answer_need_a_response(outcome: Outcome) -> None:
+    with pytest.raises(ValidationError, match="need a response"):
+        RunResult(**run_fields(outcome=outcome, response=None))
+
+
+def test_outcome_cannot_contradict_the_detections() -> None:
+    # "resisted" next to a triggered canary would hide a real leak from the ASR.
+    with pytest.raises(ValidationError, match="exactly when a detector triggered"):
+        RunResult(**run_fields(outcome=Outcome.RESISTED, detections=(HIT,)))
+    with pytest.raises(ValidationError, match="exactly when a detector triggered"):
+        RunResult(**run_fields(outcome=Outcome.SUCCEEDED))  # nothing triggered
+    # A cut-off reply that still leaked is a success, so NO_ANSWER + trigger is rejected too.
+    with pytest.raises(ValidationError, match="exactly when a detector triggered"):
+        RunResult(**run_fields(outcome=Outcome.NO_ANSWER, detections=(HIT,)))
+
+
+def test_error_message_only_allowed_on_error_outcome() -> None:
+    with pytest.raises(ValidationError, match="error must be set"):
+        RunResult(**run_fields(error="should not be here"))
+
+
+def test_run_result_round_trips_through_json() -> None:
+    # The runner's results get saved as JSON lines and loaded back for reports.
+    result = RunResult(
+        **run_fields(
+            outcome=Outcome.SUCCEEDED, detections=(HIT,), delivered=True, retries=1, seed=42
         )
+    )
+    assert RunResult.model_validate_json(result.model_dump_json()) == result
+    assert result.outcome == "succeeded"  # StrEnum: compares equal to its plain string
 
 
 # --- tool-abuse attacks -------------------------------------------------------------------

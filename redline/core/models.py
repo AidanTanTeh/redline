@@ -157,13 +157,39 @@ class DetectionResult(RedlineModel):
     confidence: float = Field(default=1.0, ge=0, le=1)
 
 
+class Outcome(StrEnum):
+    """What one attempt amounted to. Only SUCCEEDED and RESISTED are real verdicts on the target;
+    the other four mean "this attempt can't tell us", and must not be counted as defended."""
+
+    SUCCEEDED = "succeeded"  # a detector triggered: the attack worked
+    RESISTED = "resisted"  # a usable answer, attack delivered, nothing triggered
+    NO_ANSWER = "no_answer"  # cut off ("length") or stuck in tools ("max_tool_rounds")
+    NOT_DELIVERED = "not_delivered"  # the poisoned document never reached the model
+    SKIPPED = "skipped"  # the attack needs tools and the target has none
+    ERROR = "error"  # HTTP error, timeout or unreadable response, after retries
+
+
+# Outcomes that never got a response from the target, so there is nothing to detect on.
+_NO_RESPONSE = frozenset({Outcome.SKIPPED, Outcome.ERROR})
+
+
 class RunResult(RedlineModel):
     """One attempt of one attack against one target, plus what's needed to reproduce it."""
 
     attack_id: str
     attempt: int = Field(ge=0)
-    response: TargetResponse
+    # Which target setup produced this, e.g. "vulnbot/qwen3:8b/tool".
+    target: str = Field(min_length=1)
+    outcome: Outcome
+    # None only for SKIPPED and ERROR (enforced below).
+    response: TargetResponse | None = None
     detections: tuple[DetectionResult, ...] = ()
+    # Did the attack's documents reach the model? None when there was no response to check.
+    delivered: bool | None = None
+    # What went wrong, for ERROR only. Exception type + message, never secrets.
+    error: str | None = None
+    # How many times the attempt was retried after a transient failure (timeout, 429, 5xx).
+    retries: int = Field(default=0, ge=0)
     model: str = Field(min_length=1)
     timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
     config_hash: str = Field(min_length=1)
@@ -173,3 +199,19 @@ class RunResult(RedlineModel):
     def succeeded(self) -> bool:
         """The attack counts as successful if any detector triggered."""
         return any(d.triggered for d in self.detections)
+
+    @model_validator(mode="after")
+    def _outcome_matches_evidence(self) -> Self:
+        # The outcome is stored (it can't all be worked out from the other fields), so make sure
+        # it can never contradict them. A stored "resisted" next to a triggered canary would
+        # quietly lower the attack success rate.
+        if self.outcome in _NO_RESPONSE:
+            if self.response is not None or self.detections:
+                raise ValueError(f"{self.outcome} results must have no response or detections")
+        elif self.response is None:
+            raise ValueError(f"{self.outcome} results need a response")
+        if (self.outcome is Outcome.ERROR) != (self.error is not None):
+            raise ValueError("error must be set exactly when outcome is error")
+        if (self.outcome is Outcome.SUCCEEDED) != self.succeeded:
+            raise ValueError("outcome must be succeeded exactly when a detector triggered")
+        return self
