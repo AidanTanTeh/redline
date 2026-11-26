@@ -206,3 +206,23 @@ none of it is a rate. A poisoned-document attack has not yet made the bot send a
 direct requests did), Gemini tool calling is untested, and delivery in the tool channel
 depends on the model choosing to retrieve. These go into the 3.1 runner notes so undelivered
 or tool-less runs are never counted as defended.
+
+## 3.1: Async runner
+
+I built the runner as a library that runs each attack several times and labels every attempt
+as succeeded, resisted, no answer, not delivered, skipped or error, because only the first
+two say anything about the target's defences. A factory builds each attempt (bot, message and
+detectors), so the runner knows nothing about VulnBot or canaries and can drive other apps
+later. Each repeat gets its own seed, the canary is derived from the seed and attack ID, and
+a config hash shows whether two runs are comparable. I wrote the retry logic by hand to
+understand it: only timeouts, network failures, 429s and server errors are retried.
+
+Testing first showed that Ollama queues requests, so the default is one at a time, and that
+it honoured the seed in a single check. Things I changed along the way: not every httpx
+transport error is worth retrying; the hash refuses non-JSON values instead of turning them
+into strings that could differ each run; and the hash ignored which attacks were run, so 4
+attacks looked comparable to 31, which I fixed. The first live run (8 attempts, temperature
+0.7) had 4 successes and 4 resisted, too few to be a rate. It also showed that a system
+prompt leak without the canary would be missed. Still open: code changes don't alter the
+hash, a crashing detector discards the reply, and the tool channel, retries and parallel runs
+haven't been seen live.
