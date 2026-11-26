@@ -5,6 +5,7 @@ Run from the repo root:
     uv run python examples/corpus_run.py                          # 4 attacks x 2 repeats
     uv run python examples/corpus_run.py --repeats 3 di-override-01 ii-email-01
     uv run python examples/corpus_run.py --channel tool ii-review-note-01
+    uv run python examples/corpus_run.py --all --repeats 3      # every attack (slow)
 
 Each finished attempt is appended to runs/<time>.jsonl straight away, so stopping a long run
 keeps what it already did. The summary counts outcomes. It is NOT an attack success rate:
@@ -34,6 +35,7 @@ RUNS_DIR = Path("runs")
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run attacks against local VulnBot.")
     parser.add_argument("attack_ids", nargs="*", default=DEFAULT_ATTACK_IDS)
+    parser.add_argument("--all", action="store_true", help="run every corpus attack")
     parser.add_argument("--channel", choices=["prompt", "tool"], default="prompt")
     parser.add_argument("--repeats", type=int, default=2)
     parser.add_argument("--base-seed", type=int, default=0)
@@ -80,10 +82,13 @@ def main() -> None:
     args = parse_args()
     corpus = load_corpus()
     by_id = {attack.id: attack for attack in corpus.attacks}
-    unknown = [i for i in args.attack_ids if i not in by_id]
+    if args.all and args.attack_ids != DEFAULT_ATTACK_IDS:
+        sys.exit("give either --all or attack ids, not both")
+    attack_ids = list(by_id) if args.all else args.attack_ids
+    unknown = [i for i in attack_ids if i not in by_id]
     if unknown:
         sys.exit(f"unknown attack id(s) {unknown}. Choose from: {', '.join(sorted(by_id))}")
-    attacks = [by_id[i] for i in args.attack_ids]
+    attacks = [by_id[i] for i in attack_ids]
 
     backend = OpenAICompatConfig(
         base_url="http://localhost:11434/v1",
