@@ -11,17 +11,25 @@ difference in results is down to the channel, not to one bot having more abiliti
 Build a fresh bot per attack: its tools hold that attack's documents and nothing carries over.
 """
 
+from collections.abc import Sequence
 from typing import Literal
 
 import httpx
 
 from redline.attacks import render_prompt
-from redline.core import Attack, TargetResponse
-from redline.demo.tools import search_docs_tool, send_email_tool
+from redline.core import Attack, Document, TargetResponse
+from redline.demo.tools import FakeTool, search_docs_tool, send_email_tool
 from redline.demo.vulnbot import DEFAULT_MAX_TOOL_ROUNDS, VulnBot
 from redline.targets import OpenAICompatConfig
 
 Channel = Literal["prompt", "tool"]
+
+
+def channel_tools(channel: Channel, documents: Sequence[Document]) -> list[FakeTool]:
+    """The tools VulnBot has in a channel. Only the tool channel can search for documents."""
+    if channel == "prompt":
+        return [send_email_tool()]
+    return [search_docs_tool(documents), send_email_tool()]
 
 
 def make_vulnbot(
@@ -38,14 +46,13 @@ def make_vulnbot(
     An attack with no documents (a direct attack) is sent as-is in either channel, so only
     attacks with documents make a meaningful channel comparison.
     """
-    if channel == "prompt":
-        tools = [send_email_tool()]
-        message = render_prompt(attack)
-    else:
-        tools = [search_docs_tool(attack.documents), send_email_tool()]
-        message = attack.prompt
+    message = render_prompt(attack) if channel == "prompt" else attack.prompt
     bot = VulnBot(
-        backend, canary=canary, client=client, tools=tools, max_tool_rounds=max_tool_rounds
+        backend,
+        canary=canary,
+        client=client,
+        tools=channel_tools(channel, attack.documents),
+        max_tool_rounds=max_tool_rounds,
     )
     return bot, message
 
