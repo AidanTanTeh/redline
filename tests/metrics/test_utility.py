@@ -21,7 +21,7 @@ def task(task_id: str, kind: TaskKind = TaskKind.ANSWER) -> BenignTask:
 
 def result(task_id: str, attempt: int, outcome: Outcome, config_hash: str = "h") -> RunResult:
     """A valid RunResult for any outcome (the model checks the fields agree)."""
-    answered = outcome not in (Outcome.ERROR, Outcome.SKIPPED)
+    answered = outcome not in (Outcome.ERROR, Outcome.SKIPPED, Outcome.NOT_RUN)
     done = DetectionResult(detector="task", triggered=True)
     return RunResult(
         attack_id=task_id,
@@ -70,6 +70,13 @@ def test_errors_and_skips_are_left_out_but_still_counted() -> None:
     assert overall.utility == 1.0
     assert overall.counts[Outcome.ERROR] == 1
     assert overall.counts[Outcome.SKIPPED] == 1
+
+
+def test_attempts_a_cap_stopped_are_not_failures() -> None:
+    overall = summarize_utility(results("a", OK, Outcome.NOT_RUN), [task("a")]).overall
+
+    assert (overall.attempts, overall.scored) == (2, 1)
+    assert overall.utility == 1.0
 
 
 def test_each_task_weighs_the_same_however_many_attempts_it_has() -> None:
