@@ -8,7 +8,7 @@ import unicodedata
 from collections.abc import Iterator
 from dataclasses import dataclass
 
-from redline.core import Attack, DetectionResult, TargetResponse
+from redline.core import Case, DetectionResult, TargetResponse
 from redline.detectors.base import field_text, present_fields, scan_fields
 
 # Normalised matching deletes separators, so a short or guessable canary ("admin") could match
@@ -118,7 +118,7 @@ class CanaryDetector:
     def name(self) -> str:
         return "canary"
 
-    async def detect(self, attack: Attack, response: TargetResponse) -> tuple[DetectionResult, ...]:
+    async def detect(self, attack: Case, response: TargetResponse) -> tuple[DetectionResult, ...]:
         # `attack` is unused: this detector only cares about what came out, not what was asked.
         results = []
         for field in present_fields(response, self._fields):

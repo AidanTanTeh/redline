@@ -8,7 +8,7 @@ from collections.abc import Awaitable, Callable, Sequence
 from datetime import UTC, datetime
 from typing import Any
 
-from redline.core import Attack, DetectionResult, Outcome, RedlineModel, RunResult, TargetResponse
+from redline.core import Case, DetectionResult, Outcome, RedlineModel, RunResult, TargetResponse
 from redline.runner.retry import AttemptFailed, with_retries
 from redline.runner.trial import RunConfig, TrialFactory, config_hash
 
@@ -24,7 +24,8 @@ class RunReport(RedlineModel):
     # In attack order, then attempt order, however the attempts happened to finish.
     results: tuple[RunResult, ...]
     config_hash: str
-    corpus_hash: str
+    # Fingerprint of the files the cases (attacks or benign tasks) were loaded from.
+    cases_hash: str
     # The factory's description of the target setup (model, temperature, channel, ...).
     target: dict[str, Any]
     started_at: datetime
@@ -45,11 +46,11 @@ def classify(
 
 
 async def run_attacks(
-    attacks: Sequence[Attack],
+    attacks: Sequence[Case],
     factory: TrialFactory,
     config: RunConfig,
     *,
-    corpus_hash: str,
+    cases_hash: str,
     on_result: Callable[[RunResult], None] | None = None,
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
 ) -> RunReport:
@@ -65,12 +66,12 @@ async def run_attacks(
         raise ValueError("attack ids must be unique within a run")
     factory.preflight()
     description = dict(factory.describe())
-    run_hash = config_hash(description, corpus_hash, attacks, config)
+    run_hash = config_hash(description, cases_hash, attacks, config)
     started_at = datetime.now(UTC)
     # At most this many attempts are in flight at once.
     slots = asyncio.Semaphore(config.max_concurrency)
 
-    async def limited(attack: Attack, attempt: int) -> RunResult:
+    async def limited(attack: Case, attempt: int) -> RunResult:
         async with slots:
             result = await _run_attempt(attack, attempt, factory, config, run_hash, sleep)
             if on_result is not None:
@@ -87,7 +88,7 @@ async def run_attacks(
     return RunReport(
         results=tuple(task.result() for task in tasks),
         config_hash=run_hash,
-        corpus_hash=corpus_hash,
+        cases_hash=cases_hash,
         target=description,
         started_at=started_at,
         finished_at=datetime.now(UTC),
@@ -95,7 +96,7 @@ async def run_attacks(
 
 
 async def _run_attempt(
-    attack: Attack,
+    attack: Case,
     attempt: int,
     factory: TrialFactory,
     config: RunConfig,

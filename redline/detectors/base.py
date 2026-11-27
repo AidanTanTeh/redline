@@ -3,7 +3,7 @@
 import json
 from typing import Protocol
 
-from redline.core import Attack, DetectionResult, ResponseField, TargetResponse
+from redline.core import Case, DetectionResult, ResponseField, TargetResponse
 
 
 def scan_fields(*, reasoning: bool, tool_calls: bool) -> tuple[ResponseField, ...]:
@@ -51,7 +51,7 @@ class Detector(Protocol):
         """Short label recorded on every DetectionResult, e.g. "canary"."""
         ...
 
-    async def detect(self, attack: Attack, response: TargetResponse) -> tuple[DetectionResult, ...]:
+    async def detect(self, attack: Case, response: TargetResponse) -> tuple[DetectionResult, ...]:
         """Return one DetectionResult per response field this detector scanned.
 
         `triggered=True` always means the ATTACK SUCCEEDED. Deterministic detectors ignore

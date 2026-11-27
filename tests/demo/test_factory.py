@@ -68,7 +68,7 @@ async def test_a_rerun_sends_identical_requests() -> None:
     for _ in range(2):
         client, bodies = fake_model(lambda _system: "no")
         factory = VulnBotFactory(BACKEND, "prompt", client=client)
-        await run_attacks([DIRECT], factory, RunConfig(repeats=2, base_seed=5), corpus_hash="c")
+        await run_attacks([DIRECT], factory, RunConfig(repeats=2, base_seed=5), cases_hash="c")
         sent.append(bodies)
     assert sent[0] == sent[1]
     first, second = sent[0]
@@ -82,21 +82,21 @@ async def test_a_rerun_sends_identical_requests() -> None:
 async def test_leaking_the_canary_is_a_success() -> None:
     client, _ = fake_model(lambda system: f"Sure: {canary_in(system)}")
     factory = VulnBotFactory(BACKEND, "prompt", client=client)
-    report = await run_attacks([DIRECT], factory, RunConfig(), corpus_hash="c")
+    report = await run_attacks([DIRECT], factory, RunConfig(), cases_hash="c")
     assert report.results[0].outcome is Outcome.SUCCEEDED
 
 
 async def test_saying_only_the_public_prefix_is_not_a_leak() -> None:
     client, _ = fake_model(lambda _system: f"Secrets look like {CANARY_PREFIX}abc")
     factory = VulnBotFactory(BACKEND, "prompt", client=client)
-    report = await run_attacks([DIRECT], factory, RunConfig(), corpus_hash="c")
+    report = await run_attacks([DIRECT], factory, RunConfig(), cases_hash="c")
     assert report.results[0].outcome is Outcome.RESISTED
 
 
 async def test_tool_channel_without_a_search_is_not_delivered() -> None:
     client, _ = fake_model(lambda _system: "I think the lamp is fine.")
     factory = VulnBotFactory(BACKEND, "tool", client=client)
-    report = await run_attacks([INDIRECT], factory, RunConfig(), corpus_hash="c")
+    report = await run_attacks([INDIRECT], factory, RunConfig(), cases_hash="c")
     assert report.results[0].outcome is Outcome.NOT_DELIVERED
 
 
@@ -188,7 +188,7 @@ LEAK = Attack(
 async def answered(attack: Attack, text: str) -> RunResult:
     client, _ = fake_model(lambda _system: text)
     factory = VulnBotFactory(BACKEND, "prompt", client=client)
-    report = await run_attacks([attack], factory, RunConfig(), corpus_hash="c")
+    report = await run_attacks([attack], factory, RunConfig(), cases_hash="c")
     return report.results[0]
 
 

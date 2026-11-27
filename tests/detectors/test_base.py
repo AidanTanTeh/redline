@@ -1,4 +1,4 @@
-from redline.core import Attack, AttackCategory, DetectionResult, TargetResponse, ToolCall
+from redline.core import Attack, AttackCategory, Case, DetectionResult, TargetResponse, ToolCall
 from redline.detectors import Detector
 from redline.detectors.base import field_text
 
@@ -10,7 +10,7 @@ class AlwaysTriggers:
     def name(self) -> str:
         return "always"
 
-    async def detect(self, attack: Attack, response: TargetResponse) -> tuple[DetectionResult, ...]:
+    async def detect(self, attack: Case, response: TargetResponse) -> tuple[DetectionResult, ...]:
         return (DetectionResult(detector=self.name, triggered=True, field="text"),)
 
 

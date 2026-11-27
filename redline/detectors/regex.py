@@ -4,7 +4,7 @@ import re
 from collections.abc import Sequence
 from typing import Self
 
-from redline.core import Attack, DetectionResult, TargetResponse
+from redline.core import Case, DetectionResult, TargetResponse
 from redline.detectors.base import field_text, present_fields, scan_fields
 
 MAX_EVIDENCE_CHARS = 80
@@ -86,7 +86,7 @@ class RegexDetector:
     def name(self) -> str:
         return self._name
 
-    async def detect(self, attack: Attack, response: TargetResponse) -> tuple[DetectionResult, ...]:
+    async def detect(self, attack: Case, response: TargetResponse) -> tuple[DetectionResult, ...]:
         # `attack` is unused: this detector only cares about what came out, not what was asked.
         results = []
         for field in present_fields(response, self._fields):

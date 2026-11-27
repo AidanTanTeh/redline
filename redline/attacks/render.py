@@ -1,8 +1,8 @@
-"""Turn an Attack into the text actually sent to a target."""
+"""Turn a case (attack or benign task) into the text actually sent to a target."""
 
 from collections.abc import Sequence
 
-from redline.core import Attack, Document
+from redline.core import Case, Document
 
 # Deliberately plain: this models a basic RAG app that pastes retrieved text straight into the
 # prompt with no delimiters, no "treat this as data" warning, and no escaping. That is the
@@ -23,7 +23,7 @@ def render_documents(documents: Sequence[Document]) -> str:
     )
 
 
-def render_prompt(attack: Attack) -> str:
+def render_prompt(attack: Case) -> str:
     """Build the message for `Target.send()`.
 
     No documents (direct attacks): the prompt unchanged.

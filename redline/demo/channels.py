@@ -18,7 +18,7 @@ from typing import Literal
 import httpx
 
 from redline.attacks import render_prompt
-from redline.core import Attack, Document, TargetResponse
+from redline.core import Case, Document, TargetResponse
 from redline.demo.tools import FakeTool, search_docs_tool, send_email_tool
 from redline.demo.vulnbot import DEFAULT_MAX_TOOL_ROUNDS, VulnBot
 from redline.targets import OpenAICompatConfig
@@ -34,7 +34,7 @@ def channel_tools(channel: Channel, documents: Sequence[Document]) -> list[FakeT
 
 
 def make_vulnbot(
-    attack: Attack,
+    attack: Case,
     backend: OpenAICompatConfig,
     channel: Channel,
     *,
@@ -58,7 +58,7 @@ def make_vulnbot(
     return bot, message
 
 
-def was_delivered(attack: Attack, channel: Channel, response: TargetResponse) -> bool:
+def was_delivered(attack: Case, channel: Channel, response: TargetResponse) -> bool:
     """Did the attack's documents actually reach the model?
 
     In the tool channel the bot has to CHOOSE to call `search_docs`. If it answers from its own

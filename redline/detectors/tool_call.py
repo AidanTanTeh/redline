@@ -1,9 +1,9 @@
 """Tool-call detector: did the bot call a tool the way the attack wanted?"""
 
-from redline.core import Attack, DetectionResult, TargetResponse, ToolCall, ToolCallMatch
+from redline.core import Attack, Case, DetectionResult, TargetResponse, ToolCall, ToolCallMatch
 
 
-def _matches(call: ToolCall, wanted: ToolCallMatch) -> bool:
+def matches_tool_call(call: ToolCall, wanted: ToolCallMatch) -> bool:
     """True if `call` is the wanted tool and every wanted argument text appears in its value."""
     if call.name.casefold() != wanted.tool.casefold():
         return False
@@ -41,11 +41,11 @@ class ToolCallDetector:
     def name(self) -> str:
         return "tool_call"
 
-    async def detect(self, attack: Attack, response: TargetResponse) -> tuple[DetectionResult, ...]:
-        wanted = attack.success_tool_call
+    async def detect(self, attack: Case, response: TargetResponse) -> tuple[DetectionResult, ...]:
+        wanted = attack.success_tool_call if isinstance(attack, Attack) else None
         if wanted is None:
             return ()
-        hit = next((call for call in response.tool_calls if _matches(call, wanted)), None)
+        hit = next((call for call in response.tool_calls if matches_tool_call(call, wanted)), None)
         return (
             DetectionResult(
                 detector=self.name,

@@ -8,7 +8,7 @@ from typing import Any, Protocol
 
 from pydantic import Field
 
-from redline.core import Attack, RedlineModel, TargetResponse
+from redline.core import Case, RedlineModel, TargetResponse
 from redline.detectors import Detector
 from redline.targets import Target
 
@@ -64,7 +64,7 @@ class TrialFactory(Protocol):
         """Raise now if the run can't work (e.g. a missing API key), not 20 minutes in."""
         ...
 
-    def make_trial(self, attack: Attack, seed: int) -> Trial:
+    def make_trial(self, attack: Case, seed: int) -> Trial:
         """A fresh target, message and detectors. The same attack and seed give the same prompt."""
         ...
 
@@ -88,8 +88,8 @@ class RunConfig(RedlineModel):
 
 def config_hash(
     description: Mapping[str, Any],
-    corpus_hash: str,
-    attacks: Sequence[Attack],
+    cases_hash: str,
+    attacks: Sequence[Case],
     config: RunConfig,
 ) -> str:
     """A short fingerprint of everything that changes what the model sees.
@@ -99,7 +99,9 @@ def config_hash(
     """
     payload = {
         "target": dict(description),
-        "corpus": corpus_hash,
+        # The key stays "corpus" although it can be a task set's hash: key names are hashed too,
+        # so renaming it would change every config hash and unpair earlier runs.
+        "corpus": cases_hash,
         # The attacks actually run: 4 of them is not comparable with all 31, and an attack built
         # in code isn't covered by the corpus hash. Sorted, so their order doesn't matter.
         "attacks": [a.model_dump(mode="json") for a in sorted(attacks, key=lambda a: a.id)],

@@ -5,7 +5,15 @@ from typing import Any
 import httpx
 import pytest
 
-from redline.core import Attack, AttackCategory, Outcome, RunResult, TargetResponse, ToolCallMatch
+from redline.core import (
+    Attack,
+    AttackCategory,
+    Case,
+    Outcome,
+    RunResult,
+    TargetResponse,
+    ToolCallMatch,
+)
 from redline.detectors import Detector, RegexDetector
 from redline.runner import RunConfig, RunReport, Trial, run_attacks
 
@@ -67,7 +75,7 @@ class FakeFactory:
     def preflight(self) -> None:
         self.preflighted = True
 
-    def make_trial(self, attack: Attack, seed: int) -> Trial:
+    def make_trial(self, attack: Case, seed: int) -> Trial:
         self.seeds.append(seed)
         return Trial(
             target=FakeTarget(self.send),
@@ -91,7 +99,7 @@ async def run(
         attacks or (attack(),),
         factory,
         config or RunConfig(),
-        corpus_hash="corpus",
+        cases_hash="corpus",
         on_result=on_result,
         sleep=no_sleep,
     )
@@ -195,7 +203,7 @@ async def test_broken_detector_is_an_error_and_does_not_call_the_model_again() -
     class Broken:
         name = "broken"
 
-        async def detect(self, attack: Attack, response: TargetResponse) -> Any:
+        async def detect(self, attack: Case, response: TargetResponse) -> Any:
             raise httpx.ReadTimeout("judge is slow")
 
     result = await only_result(FakeFactory(send, detectors=(Broken(),)))

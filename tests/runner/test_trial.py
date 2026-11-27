@@ -4,7 +4,7 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from redline.core import Attack, AttackCategory, TargetResponse
+from redline.core import Attack, AttackCategory, Case, TargetResponse
 from redline.runner import RunConfig, Trial, TrialFactory, config_hash
 
 DESCRIPTION: dict[str, Any] = {
@@ -33,7 +33,7 @@ class FakeFactory:
     def preflight(self) -> None:
         return None
 
-    def make_trial(self, attack: Attack, seed: int) -> Trial:
+    def make_trial(self, attack: Case, seed: int) -> Trial:
         return Trial(target=EchoTarget(), message=f"{attack.prompt} #{seed}", detectors=())
 
 
