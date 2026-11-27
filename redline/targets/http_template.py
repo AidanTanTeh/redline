@@ -10,7 +10,7 @@ from pydantic import ConfigDict, Field, model_validator
 
 from redline.core import RedlineModel, TargetResponse, ToolCall
 from redline.targets.limiter import RateLimiter
-from redline.targets.secrets import is_safe_header_text, read_secret
+from redline.targets.secrets import is_safe_header_text, read_secret, redact
 
 PLACEHOLDER = "{prompt}"
 # ${NAME} in a header value is replaced by that environment variable at send time.
@@ -239,13 +239,15 @@ class HttpTemplateTarget:
             text = ""
         if not isinstance(text, str):
             raise ValueError(f"'{config.response_path}' is not text")
-        return TargetResponse(
+        reply = TargetResponse(
             text=text,
             model=config.model,
             latency_ms=latency_ms,
             finish_reason=finish_reason,
             tool_calls=tool_calls,
         )
+        # Every environment value that went into a header.
+        return redact(reply, [read_secret(name) for name in config.env_names])
 
     def _finish_reason(self, data: Any) -> str | None:
         """The app's stop reason, with its cut-off and blocked values translated into the

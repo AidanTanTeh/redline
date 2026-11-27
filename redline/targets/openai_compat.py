@@ -11,7 +11,7 @@ from pydantic import Field
 
 from redline.core import RedlineModel, TargetResponse, ToolCall, Usage
 from redline.targets.limiter import RateLimiter
-from redline.targets.secrets import read_secret
+from redline.targets.secrets import read_secret, redact
 
 _THINK_BLOCK = re.compile(r"<think>(.*?)</think>", re.DOTALL)
 
@@ -229,4 +229,6 @@ class OpenAICompatTarget:
             tool_calls=tool_calls,
             usage=_parse_usage(data.get("usage")),
         )
+        sent_key = headers.get("Authorization", "").removeprefix("Bearer ")
+        target_response = redact(target_response, [sent_key])
         return ChatTurn(response=target_response, assistant_message=_assistant_message(message))
