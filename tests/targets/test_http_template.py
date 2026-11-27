@@ -184,6 +184,94 @@ async def test_unreadable_tool_calls_are_an_error(data: Any) -> None:
         await target.send("a")
 
 
+# --- finish reason ----------------------------------------------------------
+
+STOPPED: dict[str, Any] = {
+    "finish_reason_path": "data.why",
+    "cut_off_values": ("MAX_TOKENS",),
+    "blocked_values": ("SAFETY", "blocked"),
+}
+
+
+@pytest.mark.parametrize(
+    ("raw", "recorded"),
+    [
+        ("max_tokens", "length"),
+        ("Safety", "content_filter"),
+        ("blocked", "content_filter"),
+        ("STOP", "STOP"),
+        (None, None),
+    ],
+)
+async def test_the_apps_stop_reasons_are_translated(raw: str | None, recorded: str | None) -> None:
+    data = {"data": {"reply": "hi", "why": raw}}
+    response = await answering(data, **STOPPED).send("a")
+    assert response.finish_reason == recorded
+
+
+async def test_without_a_path_no_finish_reason_is_claimed() -> None:
+    data = {"data": {"reply": "hi", "why": "length"}}
+    assert (await answering(data).send("a")).finish_reason is None
+
+
+async def test_a_stopped_reply_may_have_null_text() -> None:
+    data = {"data": {"reply": None, "why": "SAFETY"}}
+    response = await answering(data, **STOPPED).send("a")
+    assert (response.text, response.finish_reason) == ("", "content_filter")
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        {"data": {"reply": "hi"}},  # wrong path
+        {"data": {"reply": "hi", "why": 3}},
+        {"data": {"reply": None, "why": "STOP"}},  # finished normally, yet no text
+    ],
+)
+async def test_an_unreadable_stop_reason_is_an_error(data: Any) -> None:
+    with pytest.raises(ValueError):
+        await answering(data, **STOPPED).send("a")
+
+
+def test_stop_values_without_a_path_are_rejected() -> None:
+    with pytest.raises(ValidationError, match="finish_reason_path"):
+        config(blocked_values=("SAFETY",))
+
+
+# --- literal secrets --------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"url": "http://localhost/a?key=abc123"},
+        {"url": "http://localhost/a?x=1&API_KEY=abc123"},
+        {"body": {"q": "{prompt}", "apiKey": "abc123"}},
+        {"body": {"q": "{prompt}", "options": [{"access-token": "abc123"}]}},
+        {"headers": {"X-Auth": "abc123"}},
+        {"headers": {"Session-Id": "abc123"}},
+        {"headers": {"X-Password": "abc123"}},
+    ],
+)
+def test_more_places_a_literal_secret_can_hide_are_rejected(changes: dict[str, Any]) -> None:
+    with pytest.raises(ValidationError) as caught:
+        config(**changes)
+    assert "abc123" not in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"url": "http://localhost/a?session_id=7&max_tokens=5"},
+        {"body": {"q": "{prompt}", "max_tokens": 300, "session_id": "abc", "keyword": "x"}},
+        {"body": {"token": "{prompt}"}},  # the app's name for the message field
+        {"body": {"q": "{prompt}", "key": 3}},
+    ],
+)
+def test_ordinary_fields_are_not_mistaken_for_secrets(changes: dict[str, Any]) -> None:
+    config(**changes)
+
+
 # --- configuration guards ---------------------------------------------------
 
 

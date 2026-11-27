@@ -15,8 +15,58 @@ from redline.targets.secrets import is_safe_header_text, read_secret
 PLACEHOLDER = "{prompt}"
 # ${NAME} in a header value is replaced by that environment variable at send time.
 _ENV_REFERENCE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
-_SECRET_HEADER_HINTS = ("authorization", "cookie", "key", "token", "secret")
+# A header whose name CONTAINS one of these must use ${ENV_NAME}.
+_SECRET_HEADER_HINTS = (
+    "auth",
+    "cookie",
+    "key",
+    "token",
+    "secret",
+    "session",
+    "password",
+    "passwd",
+    "credential",
+)
+# Query and body names must match one of these EXACTLY (ignoring case, "-" and "_"). Matching
+# parts of names would reject ordinary fields such as "max_tokens" or "session_id".
+_SECRET_FIELD_NAMES = frozenset(
+    {
+        "accesstoken",
+        "apikey",
+        "auth",
+        "authorization",
+        "authtoken",
+        "bearertoken",
+        "clientsecret",
+        "key",
+        "passwd",
+        "password",
+        "privatekey",
+        "refreshtoken",
+        "secret",
+        "sessiontoken",
+        "token",
+    }
+)
 _LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+
+
+def _names_a_secret(name: str) -> bool:
+    return name.casefold().replace("-", "").replace("_", "") in _SECRET_FIELD_NAMES
+
+
+def _secret_fields(body: Any) -> list[str]:
+    """Names of body fields, at any depth, that hold a fixed text value and sound secret."""
+    if isinstance(body, dict):
+        found = [
+            str(key)
+            for key, value in body.items()
+            if isinstance(value, str) and PLACEHOLDER not in value and _names_a_secret(str(key))
+        ]
+        return found + [name for value in body.values() for name in _secret_fields(value)]
+    if isinstance(body, list | tuple):
+        return [name for value in body for name in _secret_fields(value)]
+    return []
 
 
 class HttpTemplateConfig(RedlineModel):
@@ -38,6 +88,12 @@ class HttpTemplateConfig(RedlineModel):
     tool_calls_path: str | None = Field(default=None, min_length=1)
     tool_name_key: str = "name"
     tool_arguments_key: str = "arguments"
+    # Where the app says why it stopped. Without this, a cut-off or blocked reply counts as a
+    # normal answer, so an attack on it looks "resisted".
+    finish_reason_path: str | None = Field(default=None, min_length=1)
+    # The app's own values for "cut off" and "blocked", ignoring case (e.g. "MAX_TOKENS").
+    cut_off_values: tuple[str, ...] = ("length",)
+    blocked_values: tuple[str, ...] = ("content_filter",)
     model: str = Field(default="unknown", min_length=1)
     timeout_s: float = Field(default=60.0, gt=0)
     # Set True to say you own this system or have permission to test it. Needed for any
@@ -69,6 +125,25 @@ class HttpTemplateConfig(RedlineModel):
             if secret and not _ENV_REFERENCE.search(value):
                 # Name the header only: the value may be a real key.
                 raise ValueError(f"header {name} must use ${{ENV_NAME}}, not a literal value")
+        return self
+
+    @model_validator(mode="after")
+    def _no_literal_secret_in_the_url_or_body(self) -> Self:
+        # Neither supports ${ENV_NAME}, so a secret has to move to a header.
+        found = [name for name in httpx.URL(self.url).params if _names_a_secret(name)]
+        found += _secret_fields(self.body)
+        if found:
+            raise ValueError(
+                f"{', '.join(found)} looks like a secret in the url or body, which are saved "
+                "in reports. Send it in a header as ${ENV_NAME}"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _finish_values_need_a_path(self) -> Self:
+        given = self.model_fields_set & {"cut_off_values", "blocked_values"}
+        if given and self.finish_reason_path is None:
+            raise ValueError("cut_off_values and blocked_values need finish_reason_path")
         return self
 
     @model_validator(mode="after")
@@ -150,14 +225,38 @@ class HttpTemplateTarget:
         response.raise_for_status()
         data = response.json()
         tool_calls = self._tool_calls(data)
+        finish_reason = self._finish_reason(data)
         text = _lookup(data, config.response_path)
-        if text is None and tool_calls:
-            text = ""  # many APIs send no text on a turn that only calls tools
+        # Many APIs send null text on a turn that only calls tools, or that was stopped.
+        if text is None and (tool_calls or finish_reason in ("length", "content_filter")):
+            text = ""
         if not isinstance(text, str):
             raise ValueError(f"'{config.response_path}' is not text")
         return TargetResponse(
-            text=text, model=config.model, latency_ms=latency_ms, tool_calls=tool_calls
+            text=text,
+            model=config.model,
+            latency_ms=latency_ms,
+            finish_reason=finish_reason,
+            tool_calls=tool_calls,
         )
+
+    def _finish_reason(self, data: Any) -> str | None:
+        """The app's stop reason, with its cut-off and blocked values translated into the
+        two words the runner counts as "no answer"."""
+        config = self._config
+        if config.finish_reason_path is None:
+            return None
+        raw = _lookup(data, config.finish_reason_path)
+        if raw is None:
+            return None
+        if not isinstance(raw, str):
+            raise ValueError(f"'{config.finish_reason_path}' is not text")
+        value = raw.casefold()
+        if value in (v.casefold() for v in config.cut_off_values):
+            return "length"
+        if value in (v.casefold() for v in config.blocked_values):
+            return "content_filter"
+        return raw
 
     async def _request(
         self, client: httpx.AsyncClient, headers: dict[str, str], body: Any
