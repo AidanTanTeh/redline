@@ -6,9 +6,11 @@ Library code: it prints nothing and writes no files. Use `on_result` for progres
 import asyncio
 from collections.abc import Awaitable, Callable, Sequence
 from datetime import UTC, datetime
-from typing import Any
 
-from redline.core import Case, DetectionResult, Outcome, RedlineModel, RunResult, TargetResponse
+from redline.core import Case, DetectionResult, Outcome, RunResult, TargetResponse
+from redline.runner.budget import Budget, BudgetExceeded
+from redline.runner.cost import AttemptEstimate, EstimatingFactory, Pricing, estimate_run
+from redline.runner.report import RunReport
 from redline.runner.retry import AttemptFailed, with_retries
 from redline.runner.trial import RunConfig, TrialFactory, config_hash
 
@@ -18,18 +20,8 @@ from redline.runner.trial import RunConfig, TrialFactory, config_hash
 _NO_ANSWER_REASONS = frozenset({"length", "max_tool_rounds", "content_filter"})
 
 
-class RunReport(RedlineModel):
-    """Everything one run produced, plus what is needed to reproduce it."""
-
-    # In attack order, then attempt order, however the attempts happened to finish.
-    results: tuple[RunResult, ...]
-    config_hash: str
-    # Fingerprint of the files the cases (attacks or benign tasks) were loaded from.
-    cases_hash: str
-    # The factory's description of the target setup (model, temperature, channel, ...).
-    target: dict[str, Any]
-    started_at: datetime
-    finished_at: datetime
+class _OverBudget(Exception):
+    """A try that the budget would not allow to be sent."""
 
 
 def classify(
@@ -53,12 +45,19 @@ async def run_attacks(
     cases_hash: str,
     on_result: Callable[[RunResult], None] | None = None,
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    pricing: Pricing | None = None,
+    allow_over_estimate: bool = False,
 ) -> RunReport:
     """Run every attack `config.repeats` times and return all the results.
 
     A failing attempt becomes an ERROR result and the run carries on. `on_result` is called as
     each attempt finishes; if it raises, the run stops (losing results silently is worse).
     `sleep` is only the wait between retries, replaceable in tests.
+
+    With `config.max_requests` or `config.max_cost_usd` set (a cost cap also needs `pricing`):
+    the run is refused with BudgetExceeded if its worst case is over a cap, unless
+    `allow_over_estimate` is True. Then it runs until the next try might not fit, and every
+    attempt after that is recorded as NOT_RUN.
     """
     ids = [attack.id for attack in attacks]
     if len(set(ids)) != len(ids):
@@ -67,32 +66,75 @@ async def run_attacks(
     factory.preflight()
     description = dict(factory.describe())
     run_hash = config_hash(description, cases_hash, attacks, config)
+    budget, worst_cases = _make_budget(attacks, factory, config, pricing, allow_over_estimate)
     started_at = datetime.now(UTC)
     # At most this many attempts are in flight at once.
     slots = asyncio.Semaphore(config.max_concurrency)
 
     async def limited(attack: Case, attempt: int) -> RunResult:
         async with slots:
-            result = await _run_attempt(attack, attempt, factory, config, run_hash, sleep)
+            worst = worst_cases.get(attack.id)
+            result = await _run_attempt(
+                attack, attempt, factory, config, run_hash, sleep, budget, worst
+            )
             if on_result is not None:
                 on_result(result)
             return result
 
+    order = [(a, attempt) for a in range(len(attacks)) for attempt in range(config.repeats)]
+    if budget is not None:
+        # Every attack's first attempt, then every second one: a run stopped by its cap then
+        # covers all the attacks thinly instead of only the first few.
+        order.sort(key=lambda pair: pair[1])
     async with asyncio.TaskGroup() as group:
-        tasks = [
-            group.create_task(limited(attack, attempt))
-            for attack in attacks
-            for attempt in range(config.repeats)
-        ]
+        tasks = {
+            (a, attempt): group.create_task(limited(attacks[a], attempt)) for a, attempt in order
+        }
 
     return RunReport(
-        results=tuple(task.result() for task in tasks),
+        results=tuple(tasks[key].result() for key in sorted(tasks)),
         config_hash=run_hash,
         cases_hash=cases_hash,
         target=description,
         started_at=started_at,
         finished_at=datetime.now(UTC),
     )
+
+
+def _make_budget(
+    attacks: Sequence[Case],
+    factory: TrialFactory,
+    config: RunConfig,
+    pricing: Pricing | None,
+    allow_over_estimate: bool,
+) -> tuple[Budget | None, dict[str, AttemptEstimate]]:
+    """The run's budget and each case's worst case, or (None, {}) when nothing is capped."""
+    if config.max_requests is None and config.max_cost_usd is None:
+        return None, {}
+    if config.max_cost_usd is not None and pricing is None:
+        raise ValueError("max_cost_usd needs pricing (use Pricing.free() for a local model)")
+    if not isinstance(factory, EstimatingFactory):
+        raise TypeError("a capped run needs a factory with estimate_attempt()")
+    prices = pricing or Pricing.free()  # only a request cap: money doesn't matter
+    if not allow_over_estimate:
+        estimate = estimate_run(attacks, factory, config, prices)
+        over = []
+        if config.max_requests is not None and estimate.requests > config.max_requests:
+            over.append(f"{estimate.requests} requests (cap {config.max_requests})")
+        if config.max_cost_usd is not None and estimate.cost_usd > config.max_cost_usd:
+            over.append(f"${estimate.cost_usd:.4f} (cap ${config.max_cost_usd})")
+        if over:
+            raise BudgetExceeded(
+                f"worst case is {' and '.join(over)}. Run fewer cases or repeats, raise the "
+                "cap, or pass allow_over_estimate=True to run until the cap is reached."
+            )
+    worst_cases = {
+        case.id: factory.estimate_attempt(case)
+        for case in attacks
+        if factory.has_tools or not case.needs_tools
+    }
+    budget = Budget(prices, max_requests=config.max_requests, max_cost_usd=config.max_cost_usd)
+    return budget, worst_cases
 
 
 async def _run_attempt(
@@ -102,6 +144,8 @@ async def _run_attempt(
     config: RunConfig,
     run_hash: str,
     sleep: Callable[[float], Awaitable[None]],
+    budget: Budget | None,
+    worst: AttemptEstimate | None,
 ) -> RunResult:
     """One attempt, start to finish. Never raises for an ordinary failure."""
     seed = config.seed_for(attempt)
@@ -134,6 +178,8 @@ async def _run_attempt(
         return record(Outcome.SKIPPED)
 
     retries = 0
+    tries_sent = 0
+    last_error: Exception | None = None
     try:
         trial = factory.make_trial(attack, seed)
         if not trial.detectors:
@@ -141,14 +187,38 @@ async def _run_attempt(
             raise ValueError("trial has no detectors")
 
         async def send() -> TargetResponse:
-            async with asyncio.timeout(config.attempt_timeout_s):
-                return await trial.target.send(trial.message)
+            nonlocal tries_sent, last_error
+            # Every try is paid for separately, so each retry has to fit in the budget too.
+            if budget is not None and worst is not None and not budget.reserve(worst):
+                raise _OverBudget
+            tries_sent += 1
+            response = None
+            try:
+                async with asyncio.timeout(config.attempt_timeout_s):
+                    response = await trial.target.send(trial.message)
+                return response
+            except Exception as error:
+                last_error = error
+                raise
+            finally:
+                # Also runs on failure or cancellation, where the usage is unknown.
+                if budget is not None and worst is not None:
+                    budget.settle(worst, None if response is None else response.usage)
 
         response, retries = await with_retries(send, max_retries=config.max_retries, sleep=sleep)
         # Outside the retries: a detector bug must not make us call the model again.
         detections = tuple([r for d in trial.detectors for r in await d.detect(attack, response)])
         delivered = trial.delivered(response)
     except AttemptFailed as failure:
+        if isinstance(failure.cause, _OverBudget):
+            if not tries_sent:
+                return record(Outcome.NOT_RUN)
+            # It was tried and failed; the cap only stopped the retry.
+            return record(
+                Outcome.ERROR,
+                error=f"{type(last_error).__name__}: {last_error} (retry stopped by the cap)",
+                retries=tries_sent - 1,
+            )
         return record(Outcome.ERROR, error=str(failure), retries=failure.retries)
     except Exception as error:
         # Caught here on purpose: an escaped exception would make the TaskGroup cancel every

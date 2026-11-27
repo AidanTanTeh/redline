@@ -1,0 +1,128 @@
+"""Estimate, before anything is sent, how big and expensive a run could get.
+
+These are deliberately high estimates, not guarantees: token counts are guessed from text length,
+and retries are not included. After a run, the real figure comes from each response's `usage`.
+"""
+
+import json
+import math
+from collections.abc import Sequence
+from typing import Protocol, Self, runtime_checkable
+
+from pydantic import Field
+
+from redline.core import Case, RedlineModel
+from redline.runner.report import RunReport
+from redline.runner.trial import RunConfig, TrialFactory
+
+# English averages about 4 characters per token. Dividing by 3 guesses high on purpose.
+CHARS_PER_TOKEN = 3
+
+
+def estimate_tokens(text: str) -> int:
+    """A rough, high-side token count that needs no model-specific tokenizer."""
+    return math.ceil(len(text) / CHARS_PER_TOKEN)
+
+
+class Pricing(RedlineModel):
+    """US dollars per million tokens. The caller supplies it: prices change too often to bundle."""
+
+    input_per_mtok: float = Field(ge=0, allow_inf_nan=False)
+    output_per_mtok: float = Field(ge=0, allow_inf_nan=False)
+
+    @classmethod
+    def free(cls) -> Self:
+        """For local models such as Ollama."""
+        return cls(input_per_mtok=0, output_per_mtok=0)
+
+    def cost_usd(self, input_tokens: int, output_tokens: int) -> float:
+        total = input_tokens * self.input_per_mtok + output_tokens * self.output_per_mtok
+        return total / 1_000_000
+
+
+class AttemptEstimate(RedlineModel):
+    """The most one attempt is expected to use, over all its model calls."""
+
+    requests: int = Field(ge=1)
+    input_tokens: int = Field(ge=0)
+    output_tokens: int = Field(ge=0)
+
+
+@runtime_checkable  # so the runner can ask `isinstance` before enforcing a cap
+class EstimatingFactory(TrialFactory, Protocol):
+    """A factory that can also size an attempt. Optional: running doesn't need it."""
+
+    def estimate_attempt(self, case: Case) -> AttemptEstimate:
+        """Worst case for one attempt, worked out without calling the model."""
+        ...
+
+
+class RunEstimate(RedlineModel):
+    """Worst-case totals for a whole run, without retries."""
+
+    # Attempts that will actually be sent (skipped ones cost nothing).
+    attempts: int = Field(ge=0)
+    requests: int = Field(ge=0)
+    input_tokens: int = Field(ge=0)
+    output_tokens: int = Field(ge=0)
+    cost_usd: float = Field(ge=0)
+    # None when there is no earlier measurement to base it on.
+    seconds: float | None = Field(default=None, ge=0)
+
+
+def estimate_run(
+    cases: Sequence[Case],
+    factory: EstimatingFactory,
+    config: RunConfig,
+    pricing: Pricing,
+    *,
+    seconds_per_attempt: float | None = None,
+    parallel_requests: int = 1,
+    requests_per_minute: float | None = None,
+) -> RunEstimate:
+    """Add up the worst case for every attempt `run_attacks` would send with these settings.
+
+    `parallel_requests` is how many requests the SERVER really works on at once. It defaults to
+    1 because a server that queues (local Ollama) gets no faster from `max_concurrency`; it
+    never counts for more than `max_concurrency`. With a rate limit, the time is at least what
+    the worst-case number of requests needs to get through it.
+    """
+    if parallel_requests < 1:
+        raise ValueError("parallel_requests must be at least 1")
+    if requests_per_minute is not None and not requests_per_minute > 0:
+        raise ValueError("requests_per_minute must be positive")
+    sent = [case for case in cases if factory.has_tools or not case.needs_tools]
+    per_case = [factory.estimate_attempt(case) for case in sent]
+    attempts = len(sent) * config.repeats
+    requests = sum(e.requests for e in per_case) * config.repeats
+    input_tokens = sum(e.input_tokens for e in per_case) * config.repeats
+    output_tokens = sum(e.output_tokens for e in per_case) * config.repeats
+    seconds = None
+    if seconds_per_attempt is not None:
+        seconds = attempts * seconds_per_attempt / min(parallel_requests, config.max_concurrency)
+        if requests_per_minute is not None:
+            seconds = max(seconds, requests * 60 / requests_per_minute)
+    return RunEstimate(
+        attempts=attempts,
+        requests=requests,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cost_usd=pricing.cost_usd(input_tokens, output_tokens),
+        seconds=seconds,
+    )
+
+
+def measured_seconds_per_attempt(report: RunReport, factory: TrialFactory) -> float | None:
+    """Average model time per attempt in an earlier run of the same target setup.
+
+    None if that run used different settings (its speed would mislead) or got no responses.
+    """
+
+    def canonical(description: object) -> str:
+        # Compared as JSON because a saved report has lists where a live description has tuples.
+        return json.dumps(description, sort_keys=True)
+
+    if canonical(report.target) != canonical(dict(factory.describe())):
+        return None
+    times = [r.response.latency_ms / 1000 for r in report.results if r.response is not None]
+    return sum(times) / len(times) if times else None

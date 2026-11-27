@@ -80,6 +80,9 @@ class RunConfig(RedlineModel):
     max_retries: int = Field(default=2, ge=0)
     # Time limit for one whole attempt, which may be several model calls with tools.
     attempt_timeout_s: float = Field(default=300.0, gt=0)
+    # Caps on the whole run; None means no cap. They need a factory that can estimate attempts.
+    max_requests: int | None = Field(default=None, ge=1)
+    max_cost_usd: float | None = Field(default=None, ge=0, allow_inf_nan=False)
 
     def seed_for(self, attempt: int) -> int:
         """Each repeat gets its own seed, so repeats differ but can still be reproduced."""
@@ -94,8 +97,8 @@ def config_hash(
 ) -> str:
     """A short fingerprint of everything that changes what the model sees.
 
-    Two runs with the same hash are comparable. Concurrency, retries and the timeout are left
-    out: they change how fast or how reliably a run goes, not what is sent.
+    Two runs with the same hash are comparable. Concurrency, retries, the timeout and the caps
+    are left out: they change how fast, reliably or far a run goes, not what is sent.
     """
     payload = {
         "target": dict(description),
