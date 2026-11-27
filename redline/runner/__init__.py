@@ -1,5 +1,6 @@
 """Redline runner: run attacks against a target and label what happened."""
 
+from redline.runner.app_factory import DocumentDelivery, FunctionFactory, HttpFactory
 from redline.runner.budget import Budget, BudgetExceeded
 from redline.runner.cost import (
     AttemptEstimate,
@@ -30,7 +31,10 @@ __all__ = [
     "Budget",
     "BudgetExceeded",
     "CaseFilter",
+    "DocumentDelivery",
     "EstimatingFactory",
+    "FunctionFactory",
+    "HttpFactory",
     "Pricing",
     "RetryJudge",
     "RunConfig",
