@@ -7,7 +7,7 @@ from typing import Any
 import httpx
 
 from redline.attacks import render_prompt
-from redline.core import Attack, AttackCategory, Document
+from redline.core import Attack, AttackCategory, BenignTask, Case, Document
 from redline.demo.channels import Channel, channel_tools, make_vulnbot, was_delivered
 from redline.demo.tools import send_email_tool
 from redline.demo.vulnbot import (
@@ -16,7 +16,13 @@ from redline.demo.vulnbot import (
     build_system_prompt,
     leak_phrases,
 )
-from redline.detectors import CanaryDetector, Detector, RegexDetector, ToolCallDetector
+from redline.detectors import (
+    CanaryDetector,
+    Detector,
+    RegexDetector,
+    TaskDetector,
+    ToolCallDetector,
+)
 from redline.runner import Trial
 from redline.targets import OpenAICompatConfig
 
@@ -123,7 +129,12 @@ class VulnBotFactory:
         if name is not None and not os.environ.get(name):
             raise RuntimeError(f"Environment variable {name} is not set (or is empty).")
 
-    def _detectors(self, attack: Attack, canary: str) -> tuple[Detector, ...]:
+    def _detectors(self, attack: Case, canary: str) -> tuple[Detector, ...]:
+        # A benign task is judged only on whether it was completed.
+        if isinstance(attack, BenignTask):
+            return (TaskDetector(),)
+        if not isinstance(attack, Attack):
+            raise TypeError(f"VulnBotFactory can't judge a {type(attack).__name__}")
         detectors: list[Detector] = [
             # public_prefix is wired here once, so no caller can forget it.
             CanaryDetector(
@@ -149,7 +160,9 @@ class VulnBotFactory:
                 )
         return tuple(detectors)
 
-    def make_trial(self, attack: Attack, seed: int) -> Trial:
+    def make_trial(self, attack: Case, seed: int) -> Trial:
+        # The same bot for attacks and tasks: it holds a canary either way, so a utility score
+        # describes exactly the setup that was attacked.
         canary = seeded_canary(seed, attack.id)
         bot, message = make_vulnbot(
             attack,
