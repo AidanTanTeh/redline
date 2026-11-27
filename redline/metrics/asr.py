@@ -5,6 +5,7 @@ from collections.abc import Sequence
 from statistics import fmean
 
 from redline.core import Attack, AttackCategory, Outcome, RedlineModel, RunResult
+from redline.metrics.checks import check_run
 from redline.metrics.stats import Interval, wilson_interval
 
 # The only outcomes that say whether the target held up.
@@ -112,19 +113,8 @@ def summarize(results: Sequence[RunResult], attacks: Sequence[Attack]) -> AsrSum
     Raises ValueError rather than produce a number that mixes things that aren't comparable.
     Attacks with no results are ignored, so passing the whole corpus is fine.
     """
-    if not results:
-        raise ValueError("no results to summarize")
-    hashes = {r.config_hash for r in results}
-    if len(hashes) > 1:
-        raise ValueError(f"results come from different setups: {sorted(hashes)}")
-    keys = Counter((r.attack_id, r.attempt) for r in results)
-    repeated = sorted(key for key, times in keys.items() if times > 1)
-    if repeated:
-        raise ValueError(f"the same (attack, attempt) appears more than once: {repeated}")
     by_id = {a.id: a for a in attacks}
-    unknown = sorted({r.attack_id for r in results} - by_id.keys())
-    if unknown:
-        raise ValueError(f"no attack definition for: {unknown}")
+    config_hash = check_run(results, by_id.keys(), "attack")
 
     outcomes: defaultdict[str, Counter[Outcome]] = defaultdict(Counter)
     for result in results:
@@ -151,7 +141,7 @@ def summarize(results: Sequence[RunResult], attacks: Sequence[Attack]) -> AsrSum
             )
 
     return AsrSummary(
-        config_hash=hashes.pop(),
+        config_hash=config_hash,
         overall=_group(per_attack),
         categories=tuple(categories),
         attacks=per_attack,
