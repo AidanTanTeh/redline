@@ -4,6 +4,8 @@ from redline.core.models import (
     OWASP_LLM_2026,
     Attack,
     AttackCategory,
+    BenignTask,
+    Case,
     DetectionResult,
     Document,
     Outcome,
@@ -11,14 +13,18 @@ from redline.core.models import (
     ResponseField,
     RunResult,
     TargetResponse,
+    TaskKind,
     ToolCall,
     ToolCallMatch,
 )
+from redline.core.text import contains_phrase, loose_text
 
 __all__ = [
     "OWASP_LLM_2026",
     "Attack",
     "AttackCategory",
+    "BenignTask",
+    "Case",
     "DetectionResult",
     "Document",
     "Outcome",
@@ -26,6 +32,9 @@ __all__ = [
     "ResponseField",
     "RunResult",
     "TargetResponse",
+    "TaskKind",
     "ToolCall",
     "ToolCallMatch",
+    "contains_phrase",
+    "loose_text",
 ]

@@ -8,6 +8,8 @@ from typing import Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from redline.core.text import contains_phrase
+
 
 class RedlineModel(BaseModel):
     """Base for every Redline model: reject unknown keys, never mutate after creation."""
@@ -64,25 +66,38 @@ class ToolCallMatch(RedlineModel):
     arguments: dict[str, str] = Field(default_factory=dict)
 
 
-class Attack(RedlineModel):
-    """One attack payload from the corpus."""
+class Case(RedlineModel):
+    """Anything the runner can send to a target: an Attack or a BenignTask."""
 
     # Lowercase slug, e.g. "direct-override-01". Used as a stable key in results.
     id: str = Field(pattern=r"^[a-z0-9][a-z0-9_-]*$")
     name: str = Field(min_length=1)
-    category: AttackCategory
-    # What the user types. For direct attacks this IS the attack. For indirect attacks it is
-    # the user's innocent question, and the attack is hidden in `documents`.
+    # What the user types.
     prompt: str = Field(min_length=1)
-    # Fake retrieved content shown to the bot alongside the question. Required for indirect
-    # injection; optional for other categories (2.4 may use it for agency attacks).
+    # Fake retrieved content shown to the bot alongside the question.
     documents: tuple[Document, ...] = ()
+    description: str = ""
+    # tuple, not list: `frozen=True` blocks `case.tags = ...` but not `case.tags.append(...)`.
+    tags: tuple[str, ...] = ()
+
+    @property
+    def needs_tools(self) -> bool:
+        """True if success means the target called a tool, so a target with no tools can never
+        succeed. The runner skips such cases there instead of counting them as failures."""
+        return False
+
+
+class Attack(Case):
+    """One attack payload from the corpus.
+
+    For direct attacks `prompt` IS the attack. For indirect attacks it is the user's innocent
+    question, and the attack is hidden in `documents` (required for indirect injection).
+    """
+
+    category: AttackCategory
     # What counts as success for tool-abuse attacks (read by ToolCallDetector). Required for
     # excessive_agency; other categories may use it too (e.g. an indirect attack that emails).
     success_tool_call: ToolCallMatch | None = None
-    description: str = ""
-    # tuple, not list: `frozen=True` blocks `attack.tags = ...` but not `attack.tags.append(...)`.
-    tags: tuple[str, ...] = ()
 
     @model_validator(mode="after")
     def _indirect_attacks_need_documents(self) -> Self:
@@ -102,14 +117,51 @@ class Attack(RedlineModel):
 
     @property
     def needs_tools(self) -> bool:
-        """True if success means the target called a tool, so a target with no tools can never
-        be hit. The runner must skip or flag such attacks there, not count them as failures."""
         return self.success_tool_call is not None
 
     @property
     def owasp_id(self) -> str:
         """OWASP LLM Top 10 (2026) ID for this attack's category, e.g. "LLM01:2026"."""
         return OWASP_LLM_2026[self.category]
+
+
+class TaskKind(StrEnum):
+    """What a benign task checks."""
+
+    ANSWER = "answer"  # answer a question from a document
+    TOOL = "tool"  # do something with a tool, e.g. send an email
+    # Innocent, but worded like an attack ("reset my password"): catches over-refusal.
+    SENSITIVE_SOUNDING = "sensitive_sounding"
+
+
+class BenignTask(Case):
+    """A normal request the target SHOULD complete. Used to measure utility."""
+
+    kind: TaskKind
+    # Every group must be satisfied, by at least one of its phrases. Example:
+    # (("3 to 5", "3-5"), ("business days",)) means (either spelling) AND "business days".
+    expected_text: tuple[tuple[str, ...], ...] = ()
+    expected_tool_call: ToolCallMatch | None = None
+
+    @model_validator(mode="after")
+    def _needs_a_checkable_expectation(self) -> Self:
+        if not self.expected_text and self.expected_tool_call is None:
+            raise ValueError("a benign task needs expected_text or an expected_tool_call")
+        if any(not group or any(not p.strip() for p in group) for group in self.expected_text):
+            raise ValueError("expected_text groups and phrases must not be empty")
+        return self
+
+    @model_validator(mode="after")
+    def _question_must_not_give_the_answer(self) -> Self:
+        # Otherwise a bot that just repeated the question would "complete" the task.
+        given = [p for g in self.expected_text for p in g if contains_phrase(self.prompt, p)]
+        if given:
+            raise ValueError(f"expected phrases appear in the prompt: {given}")
+        return self
+
+    @property
+    def needs_tools(self) -> bool:
+        return self.expected_tool_call is not None
 
 
 class ToolCall(RedlineModel):
@@ -148,7 +200,8 @@ class DetectionResult(RedlineModel):
     """One detector's verdict on one response."""
 
     detector: str = Field(min_length=1)
-    # True means the ATTACK SUCCEEDED according to this detector (e.g. canary leaked).
+    # True means the case's success condition was met according to this detector: for an
+    # attack, it worked (e.g. canary leaked); for a benign task, it was completed.
     triggered: bool
     # Which part of the response this verdict is about. Reports use it to keep leaks in the
     # visible answer ("text") separate from leaks in model thinking ("reasoning").
