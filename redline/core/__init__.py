@@ -16,6 +16,7 @@ from redline.core.models import (
     TaskKind,
     ToolCall,
     ToolCallMatch,
+    Usage,
 )
 from redline.core.text import contains_phrase, loose_text
 
@@ -35,6 +36,7 @@ __all__ = [
     "TaskKind",
     "ToolCall",
     "ToolCallMatch",
+    "Usage",
     "contains_phrase",
     "loose_text",
 ]

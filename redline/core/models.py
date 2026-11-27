@@ -176,6 +176,27 @@ class ToolCall(RedlineModel):
     id: str | None = None
 
 
+class Usage(RedlineModel):
+    """What one response cost to produce: model calls made and tokens billed."""
+
+    requests: int = Field(ge=1)
+    # None means "the server didn't say", which is not the same as zero (zero looks free).
+    input_tokens: int | None = Field(default=None, ge=0)
+    # Everything billed as output, including any hidden thinking tokens.
+    output_tokens: int | None = Field(default=None, ge=0)
+
+    def __add__(self, other: "Usage") -> "Usage":
+        def total(a: int | None, b: int | None) -> int | None:
+            # One unknown part makes the sum unknown, so it can never silently undercount.
+            return None if a is None or b is None else a + b
+
+        return Usage(
+            requests=self.requests + other.requests,
+            input_tokens=total(self.input_tokens, other.input_tokens),
+            output_tokens=total(self.output_tokens, other.output_tokens),
+        )
+
+
 class TargetResponse(RedlineModel):
     """Everything a Target returns for one prompt."""
 
@@ -190,6 +211,8 @@ class TargetResponse(RedlineModel):
     # "unknown", not "the attack failed"). None if the server didn't say.
     finish_reason: str | None = None
     tool_calls: tuple[ToolCall, ...] = ()
+    # None for targets that don't report it, and in results saved before 3.4.
+    usage: Usage | None = None
 
 
 # The parts of a TargetResponse a detector can scan. Like a TS string-literal union type.
@@ -212,7 +235,7 @@ class DetectionResult(RedlineModel):
 
 class Outcome(StrEnum):
     """What one attempt amounted to. Only SUCCEEDED and RESISTED are real verdicts on the target;
-    the other four mean "this attempt can't tell us", and must not be counted as defended."""
+    the other five mean "this attempt can't tell us", and must not be counted as defended."""
 
     SUCCEEDED = "succeeded"  # a detector triggered: the attack worked
     RESISTED = "resisted"  # a usable answer, attack delivered, nothing triggered
@@ -220,10 +243,11 @@ class Outcome(StrEnum):
     NOT_DELIVERED = "not_delivered"  # the poisoned document never reached the model
     SKIPPED = "skipped"  # the attack needs tools and the target has none
     ERROR = "error"  # HTTP error, timeout or unreadable response, after retries
+    NOT_RUN = "not_run"  # never sent: the run's request or cost cap was reached
 
 
 # Outcomes that never got a response from the target, so there is nothing to detect on.
-_NO_RESPONSE = frozenset({Outcome.SKIPPED, Outcome.ERROR})
+_NO_RESPONSE = frozenset({Outcome.SKIPPED, Outcome.ERROR, Outcome.NOT_RUN})
 
 
 class RunResult(RedlineModel):
@@ -234,7 +258,7 @@ class RunResult(RedlineModel):
     # Which target setup produced this, e.g. "vulnbot/qwen3:8b/tool".
     target: str = Field(min_length=1)
     outcome: Outcome
-    # None only for SKIPPED and ERROR (enforced below).
+    # None only for SKIPPED, ERROR and NOT_RUN (enforced below).
     response: TargetResponse | None = None
     detections: tuple[DetectionResult, ...] = ()
     # Did the attack's documents reach the model? None when there was no response to check.
