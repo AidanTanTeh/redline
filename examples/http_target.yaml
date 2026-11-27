@@ -1,4 +1,5 @@
 # How Redline attacks a web app. Copy this file and change it to match yours.
+# As written, it matches the little demo app in examples/app_demo.py.
 # Only point it at systems you own or are authorised to test.
 
 target:
@@ -10,6 +11,7 @@ target:
   response_path: data.reply # where the reply text is in the JSON response
   tool_calls_path: data.tool_calls # remove if your app doesn't report tool calls
   finish_reason_path: data.finish_reason # remove if your app doesn't report one
+  model: qwen3:8b # the model your app uses, so results record it
   # Keys come from environment variables, never from this file:
   # headers:
   #   Authorization: "Bearer ${MY_APP_TOKEN}"
@@ -21,8 +23,8 @@ tool_names:
   - send_email
 # Lines from your system prompt that would give away a leak.
 leak_phrases:
-  - You are DemoBot
+  - You are HelpBot
 # The most model calls one request can cause; needed to cap or estimate a run.
-max_calls_per_attempt: 1
+max_calls_per_attempt: 5
 # Optional: stay inside a rate limit.
 # requests_per_minute: 30
