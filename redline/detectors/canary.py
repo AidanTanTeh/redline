@@ -2,6 +2,7 @@
 
 import base64
 import binascii
+import hashlib
 import math
 import re
 import unicodedata
@@ -10,6 +11,20 @@ from dataclasses import dataclass
 
 from redline.core import Case, DetectionResult, TargetResponse
 from redline.detectors.base import field_text, present_fields, scan_fields
+
+# The public start of every canary Redline makes. Pass it to the detector as `public_prefix`.
+CANARY_PREFIX = "REDLINE-CANARY-"
+
+
+def seeded_canary(seed: int, attack_id: str) -> str:
+    """The same seed and attack always give the same canary, so a rerun sends the same prompt.
+
+    Predictable on purpose. It is not a security secret: it only has to be something the model
+    could not have seen in training data.
+    """
+    digest = hashlib.sha256(f"{seed}:{attack_id}".encode()).hexdigest()
+    return f"{CANARY_PREFIX}{digest[:8]}"
+
 
 # Normalised matching deletes separators, so a short or guessable canary ("admin") could match
 # by accident. 8+ letters/digits keeps accidental matches astronomically unlikely.

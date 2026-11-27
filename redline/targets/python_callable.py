@@ -39,7 +39,11 @@ class PythonCallableTarget:
         *,
         name: str,
         model: str = "unknown",
+        require_full_response: bool = False,
     ) -> None:
+        # True when tool calls are being judged: a plain string can't report them, so every
+        # tool attack would silently look "resisted".
+        self._require_full_response = require_full_response
         self._function = function
         self._context = context
         self._name = name
@@ -65,6 +69,11 @@ class PythonCallableTarget:
         if isinstance(reply, TargetResponse):
             return reply
         if isinstance(reply, str):
+            if self._require_full_response:
+                raise TypeError(
+                    "return a TargetResponse with its tool_calls (empty if none): a string "
+                    "can't show whether a tool was called"
+                )
             return TargetResponse(text=reply, model=self._model, latency_ms=latency_ms)
         # Turning None or a dict into text would be judged as a real reply.
         raise TypeError(f"the function must return str or TargetResponse, not {type(reply)}")

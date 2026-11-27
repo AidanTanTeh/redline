@@ -12,9 +12,8 @@ import httpx
 
 from redline.core import TargetResponse, ToolCall, Usage
 from redline.demo.tools import FakeTool
+from redline.detectors import CANARY_PREFIX
 from redline.targets import OpenAICompatConfig, OpenAICompatTarget, RateLimiter
-
-CANARY_PREFIX = "REDLINE-CANARY-"
 
 # {canary} is filled in per bot. The only protection is the last sentence, which is the point.
 SYSTEM_PROMPT_TEMPLATE = (

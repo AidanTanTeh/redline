@@ -72,6 +72,14 @@ async def test_any_other_return_value_is_an_error(bad: object) -> None:
         await target(agent).send("hi")
 
 
+async def test_a_string_is_rejected_when_tool_calls_must_be_reported() -> None:
+    def agent(prompt: str, context: TrialContext) -> str:
+        return "I sent it"
+
+    with pytest.raises(TypeError, match="tool_calls"):
+        await target(agent, require_full_response=True).send("hi")
+
+
 async def test_the_functions_own_errors_are_not_swallowed() -> None:
     def agent(prompt: str, context: TrialContext) -> str:
         raise KeyError("boom")

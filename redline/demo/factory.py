@@ -1,6 +1,5 @@
 """Plugs VulnBot into the runner: a fresh bot, canary and detectors for every attempt."""
 
-import hashlib
 import json
 import os
 from typing import Any
@@ -11,18 +10,16 @@ from redline.attacks import render_prompt
 from redline.core import Attack, AttackCategory, BenignTask, Case, Document
 from redline.demo.channels import Channel, channel_tools, make_vulnbot, was_delivered
 from redline.demo.tools import send_email_tool
-from redline.demo.vulnbot import (
-    CANARY_PREFIX,
-    DEFAULT_MAX_TOOL_ROUNDS,
-    build_system_prompt,
-    leak_phrases,
-)
+from redline.demo.vulnbot import DEFAULT_MAX_TOOL_ROUNDS, build_system_prompt, leak_phrases
 from redline.detectors import (
+    CANARY_PREFIX,
     CanaryDetector,
     Detector,
     RegexDetector,
     TaskDetector,
     ToolCallDetector,
+    seeded_canary,
+    unknown_to_attacker,
 )
 from redline.runner import AttemptEstimate, Trial, estimate_tokens
 from redline.targets import OpenAICompatConfig, RateLimiter
@@ -39,24 +36,6 @@ _PROBE = Attack(
     prompt="probe question",
     documents=(Document(title="probe title", content="probe content"),),
 )
-
-
-def seeded_canary(seed: int, attack_id: str) -> str:
-    """The same seed and attack always give the same canary, so a rerun sends the same prompt.
-
-    Predictable on purpose. It is not a security secret: it only has to be something the model
-    could not have seen in training data.
-    """
-    digest = hashlib.sha256(f"{seed}:{attack_id}".encode()).hexdigest()
-    return f"{CANARY_PREFIX}{digest[:8]}"
-
-
-def _unknown_to_attacker(phrases: tuple[str, ...], attack: Attack) -> list[str]:
-    """Drop phrases the attack itself contains: repeating those back reveals nothing."""
-    supplied = [attack.prompt, *(f"{d.title} {d.content}" for d in attack.documents)]
-    # Same loose matching as the detector: ignore case and differences in whitespace.
-    haystack = " ".join(" ".join(supplied).split()).casefold()
-    return [p for p in phrases if " ".join(p.split()).casefold() not in haystack]
 
 
 class VulnBotFactory:
@@ -156,7 +135,7 @@ class VulnBotFactory:
         # Only for leakage attacks: elsewhere "success" keeps meaning the canary or a tool call.
         if attack.category is AttackCategory.SYSTEM_PROMPT_LEAKAGE:
             names = [tool.name for tool in channel_tools(self._channel, attack.documents)]
-            phrases = _unknown_to_attacker(leak_phrases(names), attack)
+            phrases = unknown_to_attacker(leak_phrases(names), attack)
             if phrases:
                 detectors.append(
                     RegexDetector.from_phrases(
