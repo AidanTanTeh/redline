@@ -98,6 +98,26 @@ class Attack(Case):
     # What counts as success for tool-abuse attacks (read by ToolCallDetector). Required for
     # excessive_agency; other categories may use it too (e.g. an indirect attack that emails).
     success_tool_call: ToolCallMatch | None = None
+    # Set only on attacks a mutator made. Left out of dumps when None, so an ordinary attack
+    # serialises (and so hashes) exactly as it did before this field existed. The quotes are
+    # needed because Variant is defined further down.
+    variant_of: "Variant | None" = Field(default=None, exclude_if=lambda value: value is None)
+
+    @model_validator(mode="after")
+    def _variant_matches_its_base(self) -> Self:
+        # A variant is the same attack in disguise. If its goal differed from the base's,
+        # comparing their success rates would be meaningless.
+        if self.variant_of is None:
+            return self
+        base = self.variant_of.base
+        expected_id = f"{base.id}--{self.variant_of.mutator}"
+        if self.id != expected_id:
+            raise ValueError(f"a variant's id must be {expected_id!r}")
+        if self.category is not base.category:
+            raise ValueError("a variant must keep its base attack's category")
+        if self.success_tool_call != base.success_tool_call:
+            raise ValueError("a variant must keep its base attack's success_tool_call")
+        return self
 
     @model_validator(mode="after")
     def _indirect_attacks_need_documents(self) -> Self:
@@ -123,6 +143,25 @@ class Attack(Case):
     def owasp_id(self) -> str:
         """OWASP LLM Top 10 (2026) ID for this attack's category, e.g. "LLM01:2026"."""
         return OWASP_LLM_2026[self.category]
+
+
+class Variant(RedlineModel):
+    """Where a mutated attack came from."""
+
+    # e.g. "base64". Single hyphens only: "--" separates the base id from the mutator.
+    mutator: str = Field(pattern=r"^[a-z0-9]+(-[a-z0-9]+)*$")
+    # The whole original attack, not just its id: detectors need its text.
+    base: Attack
+
+    @model_validator(mode="after")
+    def _base_is_not_a_variant(self) -> Self:
+        if self.base.variant_of is not None:
+            raise ValueError("a variant of a variant is not supported")
+        return self
+
+
+# Attack mentions Variant before it exists, so tell Pydantic to resolve that name now.
+Attack.model_rebuild()
 
 
 class TaskKind(StrEnum):
