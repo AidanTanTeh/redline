@@ -41,6 +41,16 @@ def is_retryable(error: Exception) -> bool:
     return isinstance(error, _TRANSIENT)
 
 
+def never_sent(error: Exception) -> bool:
+    """True if the request failed before it left: no connection was made, so the target can't
+    have acted on it. Read and write errors don't count, because part of it may have arrived."""
+    return isinstance(error, httpx.ConnectError | httpx.ConnectTimeout | httpx.PoolTimeout)
+
+
+def is_rate_limit(error: Exception) -> bool:
+    return isinstance(error, httpx.HTTPStatusError) and error.response.status_code == 429
+
+
 def retry_after_seconds(error: Exception) -> float | None:
     """How long the server asked us to wait, from the Retry-After header, if it said.
 
@@ -81,6 +91,7 @@ async def with_retries[T](
     max_retries: int,
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     jitter: Callable[[], float] = random.random,
+    allow: Callable[[Exception], bool] = lambda _error: True,
 ) -> tuple[T, int]:
     """Run `operation`, retrying transient failures. Returns (result, retries used).
 
@@ -88,13 +99,15 @@ async def with_retries[T](
     coroutine can only be awaited once. Raises AttemptFailed on a permanent error or when the
     retries run out. Cancellation is not caught (it is not an Exception), so Ctrl-C and
     TaskGroup shutdown still work.
+
+    `allow` can only narrow what is retried: a transient error it rejects is final.
     """
     retries = 0
     while True:
         try:
             return await operation(), retries
         except Exception as error:
-            if retries >= max_retries or not is_retryable(error):
+            if retries >= max_retries or not is_retryable(error) or not allow(error):
                 raise AttemptFailed(error, retries) from error
             wait = retry_after_seconds(error)
             if wait is None:

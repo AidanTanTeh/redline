@@ -4,7 +4,7 @@ import hashlib
 import json
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, Protocol, runtime_checkable
 
 from pydantic import Field
 
@@ -67,6 +67,39 @@ class TrialFactory(Protocol):
     def make_trial(self, attack: Case, seed: int) -> Trial:
         """A fresh target, message and detectors. The same attack and seed give the same prompt."""
         ...
+
+
+@runtime_checkable
+class CaseFilter(Protocol):
+    """Optional for a factory: say which cases this target can be tested with at all."""
+
+    def supports(self, case: Case) -> bool: ...
+
+
+def can_run(factory: TrialFactory, case: Case) -> bool:
+    """False means the case is SKIPPED: sending it could only produce a misleading result."""
+    if case.needs_tools and not factory.has_tools:
+        return False
+    return factory.supports(case) if isinstance(factory, CaseFilter) else True
+
+
+@runtime_checkable
+class RetryJudge(Protocol):
+    """Optional for a factory that isn't safe to retry in general: pick out the failures that
+    are, such as a connection that was never made."""
+
+    def can_retry(self, error: Exception) -> bool: ...
+
+
+def may_retry(factory: TrialFactory, error: Exception) -> bool:
+    """A retry reruns the whole attempt, so an app with real side effects would repeat them.
+
+    A factory with `safe_to_retry = False` is only retried for errors its `can_retry` accepts.
+    One that says nothing is safe, like VulnBot with its fake tools.
+    """
+    if getattr(factory, "safe_to_retry", True):
+        return True
+    return factory.can_retry(error) if isinstance(factory, RetryJudge) else False
 
 
 class RunConfig(RedlineModel):

@@ -12,7 +12,13 @@ from redline.runner.budget import Budget, BudgetExceeded
 from redline.runner.cost import AttemptEstimate, EstimatingFactory, Pricing, estimate_run
 from redline.runner.report import RunReport
 from redline.runner.retry import AttemptFailed, with_retries
-from redline.runner.trial import RunConfig, TrialFactory, config_hash
+from redline.runner.trial import (
+    RunConfig,
+    TrialFactory,
+    can_run,
+    config_hash,
+    may_retry,
+)
 
 # Finish reasons meaning the target never gave a usable answer. "content_filter" is the
 # OpenAI-style value for a reply the provider blocked: that isn't evidence the target itself
@@ -129,10 +135,13 @@ def _make_budget(
                 "cap, or pass allow_over_estimate=True to run until the cap is reached."
             )
     worst_cases = {
-        case.id: factory.estimate_attempt(case)
-        for case in attacks
-        if factory.has_tools or not case.needs_tools
+        case.id: factory.estimate_attempt(case) for case in attacks if can_run(factory, case)
     }
+    if config.max_cost_usd is not None and not all(w.tokens_known for w in worst_cases.values()):
+        raise ValueError(
+            "this target's token use is unknown, so a cost cap can't be enforced. "
+            "Use max_requests instead."
+        )
     budget = Budget(prices, max_requests=config.max_requests, max_cost_usd=config.max_cost_usd)
     return budget, worst_cases
 
@@ -174,7 +183,7 @@ async def _run_attempt(
             retries=retries,
         )
 
-    if attack.needs_tools and not factory.has_tools:
+    if not can_run(factory, attack):
         return record(Outcome.SKIPPED)
 
     retries = 0
@@ -205,7 +214,12 @@ async def _run_attempt(
                 if budget is not None and worst is not None:
                     budget.settle(worst, None if response is None else response.usage)
 
-        response, retries = await with_retries(send, max_retries=config.max_retries, sleep=sleep)
+        response, retries = await with_retries(
+            send,
+            max_retries=config.max_retries,
+            sleep=sleep,
+            allow=lambda error: may_retry(factory, error),
+        )
         # Outside the retries: a detector bug must not make us call the model again.
         detections = tuple([r for d in trial.detectors for r in await d.detect(attack, response)])
         delivered = trial.delivered(response)

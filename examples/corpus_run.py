@@ -117,10 +117,16 @@ def previous_speed(factory: VulnBotFactory, cases_hash: str) -> float | None:
 
 
 def print_estimate(estimate: RunEstimate, price_name: str) -> None:
+    if estimate.tokens_known:
+        size = (
+            f"{estimate.input_tokens:,} input + {estimate.output_tokens:,} output tokens, "
+            f"${estimate.cost_usd:.4f} at {price_name} prices"
+        )
+    else:
+        size = "tokens and cost unknown"
     print(
         f"worst case (a ceiling guess, usually far above real use): {estimate.requests} model "
-        f"calls, {estimate.input_tokens:,} input + {estimate.output_tokens:,} output tokens, "
-        f"${estimate.cost_usd:.4f} at {price_name} prices (retries not included)"
+        f"calls, {size} (retries not included)"
     )
     if estimate.seconds is None:
         print("time: unknown (no earlier run with these settings)")

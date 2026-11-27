@@ -13,7 +13,7 @@ from pydantic import Field
 
 from redline.core import Case, RedlineModel
 from redline.runner.report import RunReport
-from redline.runner.trial import RunConfig, TrialFactory
+from redline.runner.trial import RunConfig, TrialFactory, can_run
 
 # English averages about 4 characters per token. Dividing by 3 guesses high on purpose.
 CHARS_PER_TOKEN = 3
@@ -46,6 +46,9 @@ class AttemptEstimate(RedlineModel):
     requests: int = Field(ge=1)
     input_tokens: int = Field(ge=0)
     output_tokens: int = Field(ge=0)
+    # False when only the number of requests is known. The token figures are then meaningless
+    # zeros, and a cost cap must be refused.
+    tokens_known: bool = True
 
 
 @runtime_checkable  # so the runner can ask `isinstance` before enforcing a cap
@@ -66,6 +69,8 @@ class RunEstimate(RedlineModel):
     input_tokens: int = Field(ge=0)
     output_tokens: int = Field(ge=0)
     cost_usd: float = Field(ge=0)
+    # False: don't show the token or cost figures, they are not known.
+    tokens_known: bool = True
     # None when there is no earlier measurement to base it on.
     seconds: float | None = Field(default=None, ge=0)
 
@@ -91,7 +96,7 @@ def estimate_run(
         raise ValueError("parallel_requests must be at least 1")
     if requests_per_minute is not None and not requests_per_minute > 0:
         raise ValueError("requests_per_minute must be positive")
-    sent = [case for case in cases if factory.has_tools or not case.needs_tools]
+    sent = [case for case in cases if can_run(factory, case)]
     per_case = [factory.estimate_attempt(case) for case in sent]
     attempts = len(sent) * config.repeats
     requests = sum(e.requests for e in per_case) * config.repeats
@@ -108,6 +113,7 @@ def estimate_run(
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         cost_usd=pricing.cost_usd(input_tokens, output_tokens),
+        tokens_known=all(e.tokens_known for e in per_case),
         seconds=seconds,
     )
 
