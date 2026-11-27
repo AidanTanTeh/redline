@@ -11,6 +11,7 @@ from redline.runner.cost import (
     estimate_tokens,
     measured_seconds_per_attempt,
 )
+from redline.runner.http_config import ConfigError, HttpAppConfig, load_http_factory
 from redline.runner.report import RunReport
 from redline.runner.retry import AttemptFailed, is_rate_limit, never_sent, with_retries
 from redline.runner.runner import classify, run_attacks
@@ -31,9 +32,11 @@ __all__ = [
     "Budget",
     "BudgetExceeded",
     "CaseFilter",
+    "ConfigError",
     "DocumentDelivery",
     "EstimatingFactory",
     "FunctionFactory",
+    "HttpAppConfig",
     "HttpFactory",
     "Pricing",
     "RetryJudge",
@@ -48,6 +51,7 @@ __all__ = [
     "estimate_run",
     "estimate_tokens",
     "is_rate_limit",
+    "load_http_factory",
     "may_retry",
     "measured_seconds_per_attempt",
     "never_sent",

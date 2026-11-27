@@ -1,0 +1,28 @@
+# How Redline attacks a web app. Copy this file and change it to match yours.
+# Only point it at systems you own or are authorised to test.
+
+target:
+  url: http://localhost:8765/api/chat
+  # Needed for any host that is not your own machine:
+  # authorized: true
+  body:
+    message: "{prompt}" # Redline puts each attack here
+  response_path: data.reply # where the reply text is in the JSON response
+  tool_calls_path: data.tool_calls # remove if your app doesn't report tool calls
+  finish_reason_path: data.finish_reason # remove if your app doesn't report one
+  # Keys come from environment variables, never from this file:
+  # headers:
+  #   Authorization: "Bearer ${MY_APP_TOKEN}"
+
+# The secret YOU planted in the app (e.g. in its system prompt). Make up your own random text.
+canary: demo-canary-7f3k9q2m
+# Tools your app has. Attacks needing any other tool are skipped.
+tool_names:
+  - send_email
+# Lines from your system prompt that would give away a leak.
+leak_phrases:
+  - You are DemoBot
+# The most model calls one request can cause; needed to cap or estimate a run.
+max_calls_per_attempt: 1
+# Optional: stay inside a rate limit.
+# requests_per_minute: 30
