@@ -22,8 +22,8 @@ _ALWAYS_PROTECTED = (
 )
 
 
-def rewrite_unprotected(text: str, attack: Attack, rewrite: Callable[[str], str]) -> str:
-    """Apply `rewrite` to everything in `text` except the protected parts."""
+def protected_pattern(attack: Attack) -> re.Pattern[str]:
+    """Matches every part of this attack's text that a mutator must leave intact."""
     # Whatever the detector will look for must survive too.
     wanted: list[str] = []
     if attack.success_tool_call is not None:
@@ -35,11 +35,14 @@ def rewrite_unprotected(text: str, attack: Attack, rewrite: Callable[[str], str]
     texts = [attack.prompt, *(document.content for document in attack.documents)]
     slots = {slot for source in texts for slot in _PLACEHOLDER.findall(source)}
     placeholders = [rf"(?-i:\b{slot}\b)" for slot in sorted(slots)]
-    protected = re.compile("|".join([*literals, *_ALWAYS_PROTECTED, *placeholders]), re.IGNORECASE)
+    return re.compile("|".join([*literals, *_ALWAYS_PROTECTED, *placeholders]), re.IGNORECASE)
 
+
+def rewrite_unprotected(text: str, attack: Attack, rewrite: Callable[[str], str]) -> str:
+    """Apply `rewrite` to everything in `text` except the protected parts."""
     pieces: list[str] = []
     end = 0
-    for match in protected.finditer(text):
+    for match in protected_pattern(attack).finditer(text):
         pieces += [rewrite(text[end : match.start()]), match.group()]
         end = match.end()
     pieces.append(rewrite(text[end:]))

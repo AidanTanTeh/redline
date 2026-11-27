@@ -6,6 +6,7 @@ from redline.attacks.mutators import (
     HomoglyphMutator,
     LeetspeakMutator,
     Mutator,
+    PayloadSplitMutator,
     build_variant,
     make_variants,
 )
@@ -19,6 +20,7 @@ __all__ = [
     "HomoglyphMutator",
     "LeetspeakMutator",
     "Mutator",
+    "PayloadSplitMutator",
     "build_variant",
     "load_corpus",
     "make_variants",
