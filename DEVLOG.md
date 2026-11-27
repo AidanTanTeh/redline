@@ -252,3 +252,26 @@ compared simply: 20 tool-channel attempts never delivered the document. Unexpect
 sensitive info attacks with no documents rose from 2/21 to 11/21 with the extra tool and
 prompt line, which showed my claim that the channels differ only in delivery was wrong. I
 haven't isolated the cause or manually checked the replies.
+
+## 3.3: Benign tasks and utility
+
+A bot that refuses everything scores 0% attack success and is useless, so I added 15 normal
+tasks (document answers, innocent but suspicious-sounding questions, and emails) and a
+utility score. Attacks and tasks share one base class, `Case` (first called `TestCase`, which
+pytest would have tried to collect), so they use the same runner and the same bot. I chose
+simple phrase and tool-call checks over an AI judge: they're repeatable and free, but they
+match wording rather than meaning. Before any live run I closed two gaps: a reply that just
+repeated its input could pass, and so could a task that also emailed a stranger. Widening the
+types broke four test fakes. Utility counts every way of not helping as a failure, including
+never reading the document, which attack success rate leaves out. Each task weighs the same,
+with a 95% Wilson interval over the number of tasks. I also renamed `corpus_hash` to
+`cases_hash`, keeping the key inside the config hash so earlier baselines still match.
+
+Baseline (qwen3:8b, thinking off, temperature 0.7, 3 repeats): 100% (95% 80–100%) in the
+prompt channel. The tool channel first scored 58%, but reading the replies showed 6 passes
+where the bot never searched. Three said returns run from the purchase date when the policy
+says delivery, and still passed because they contained "30 days". A document task now counts
+only if the document was read, which gives 44% (23–68%) from the same saved replies. The cost
+is that three correct guesses about shipping time now fail. The tool bot often invented
+answers instead of searching; I haven't isolated why. The perfect prompt score suggests the
+tasks are easy, the intervals are wide, and the replies were reviewed by Claude, not by me.
