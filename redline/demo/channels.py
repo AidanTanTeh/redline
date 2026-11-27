@@ -21,7 +21,7 @@ from redline.attacks import render_prompt
 from redline.core import Case, Document, TargetResponse
 from redline.demo.tools import FakeTool, search_docs_tool, send_email_tool
 from redline.demo.vulnbot import DEFAULT_MAX_TOOL_ROUNDS, VulnBot
-from redline.targets import OpenAICompatConfig
+from redline.targets import OpenAICompatConfig, RateLimiter
 
 Channel = Literal["prompt", "tool"]
 
@@ -41,6 +41,7 @@ def make_vulnbot(
     canary: str | None = None,
     client: httpx.AsyncClient | None = None,
     max_tool_rounds: int = DEFAULT_MAX_TOOL_ROUNDS,
+    limiter: RateLimiter | None = None,
 ) -> tuple[VulnBot, str]:
     """A fresh VulnBot for `attack`, and the message to send it: `await bot.send(message)`.
 
@@ -54,6 +55,7 @@ def make_vulnbot(
         client=client,
         tools=channel_tools(channel, attack.documents),
         max_tool_rounds=max_tool_rounds,
+        limiter=limiter,
     )
     return bot, message
 

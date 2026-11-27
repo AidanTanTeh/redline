@@ -10,9 +10,9 @@ from typing import Any
 
 import httpx
 
-from redline.core import TargetResponse, ToolCall
+from redline.core import TargetResponse, ToolCall, Usage
 from redline.demo.tools import FakeTool
-from redline.targets import OpenAICompatConfig, OpenAICompatTarget
+from redline.targets import OpenAICompatConfig, OpenAICompatTarget, RateLimiter
 
 CANARY_PREFIX = "REDLINE-CANARY-"
 
@@ -87,6 +87,7 @@ class VulnBot:
         client: httpx.AsyncClient | None = None,
         tools: Sequence[FakeTool] = (),
         max_tool_rounds: int = DEFAULT_MAX_TOOL_ROUNDS,
+        limiter: RateLimiter | None = None,
     ) -> None:
         self._canary = canary if canary is not None else make_canary()
         if not self._canary:
@@ -103,7 +104,7 @@ class VulnBot:
         config = backend.model_copy(
             update={"system_prompt": build_system_prompt(self._canary, names)}
         )
-        self._target = OpenAICompatTarget(config, client)
+        self._target = OpenAICompatTarget(config, client, limiter=limiter)
         self._name = f"vulnbot/{backend.model}"
 
     @property
@@ -140,12 +141,15 @@ class VulnBot:
         thoughts: list[str] = []
         calls: list[ToolCall] = []
         latency_ms = 0.0
+        usage: Usage | None = None
         capped = False
 
         for round_number in range(self._max_tool_rounds + 1):
             turn = await self._target.chat(messages, specs)
             reply = turn.response
             latency_ms += reply.latency_ms
+            if reply.usage is not None:  # the adapter always fills it in
+                usage = reply.usage if usage is None else usage + reply.usage
             if reply.text:
                 texts.append(reply.text)
             if reply.reasoning:
@@ -174,4 +178,5 @@ class VulnBot:
             # "max_tool_rounds" means no usable final answer, like "length": not "attack failed".
             finish_reason="max_tool_rounds" if capped else reply.finish_reason,
             tool_calls=tuple(calls),
+            usage=usage,
         )

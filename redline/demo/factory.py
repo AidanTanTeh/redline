@@ -1,6 +1,7 @@
 """Plugs VulnBot into the runner: a fresh bot, canary and detectors for every attempt."""
 
 import hashlib
+import json
 import os
 from typing import Any
 
@@ -23,8 +24,11 @@ from redline.detectors import (
     TaskDetector,
     ToolCallDetector,
 )
-from redline.runner import Trial
-from redline.targets import OpenAICompatConfig
+from redline.runner import AttemptEstimate, Trial, estimate_tokens
+from redline.targets import OpenAICompatConfig, RateLimiter
+
+# Input tokens per request that we can't see: role markers and the server's tool instructions.
+_TEMPLATE_TOKENS = 100
 
 # A made-up attack, rendered by describe() so that a change to HOW documents are shown to the
 # model also changes the config hash.
@@ -66,7 +70,11 @@ class VulnBotFactory:
         max_tool_rounds: int = DEFAULT_MAX_TOOL_ROUNDS,
         scan_reasoning: bool = False,
         client: httpx.AsyncClient | None = None,
+        limiter: RateLimiter | None = None,
     ) -> None:
+        # One limiter for every bot this factory builds. Not in describe(): it changes how
+        # fast requests go, not what is sent.
+        self._limiter = limiter
         self._backend = backend
         self._channel: Channel = channel
         self._max_tool_rounds = max_tool_rounds
@@ -160,6 +168,40 @@ class VulnBotFactory:
                 )
         return tuple(detectors)
 
+    def _output_token_cap(self) -> int:
+        """The configured limit on one reply. Without one there is no worst case to compute."""
+        body = self._backend.extra_body
+        caps = [body.get(key) for key in ("max_tokens", "max_completion_tokens")]
+        valid = [cap for cap in caps if type(cap) is int and cap > 0]
+        if not valid:
+            raise ValueError("set max_tokens in extra_body to estimate a run")
+        return max(valid)
+
+    def estimate_attempt(self, case: Case) -> AttemptEstimate:
+        """Worst case for one attempt: the model asks for tools until the round cap.
+
+        Assumes each tool is called at most once per round. A model asking for the same tool
+        several times in one reply would add more input than this counts.
+        """
+        max_output = self._output_token_cap()
+        canary = seeded_canary(0, case.id)  # every canary is the same length
+        _, message = make_vulnbot(case, self._backend, self._channel, canary=canary)
+        tools = channel_tools(self._channel, case.documents)
+        system = build_system_prompt(canary, [tool.name for tool in tools])
+        specs = json.dumps([tool.spec for tool in tools])
+        first = estimate_tokens(system + message + specs) + _TEMPLATE_TOKENS
+        # What each round adds to the history: the model's reply, then the tool results.
+        results = (tool.run({"to": "someone@acme.example"}) for tool in tools)
+        growth = max_output + sum(estimate_tokens(text) for text in results)
+        # Both channels have at least one tool, so both can loop.
+        calls = self._max_tool_rounds + 1
+        return AttemptEstimate(
+            requests=calls,
+            # The whole history is re-sent each call: first, first + growth, first + 2*growth...
+            input_tokens=calls * first + growth * calls * (calls - 1) // 2,
+            output_tokens=calls * max_output,
+        )
+
     def make_trial(self, attack: Case, seed: int) -> Trial:
         # The same bot for attacks and tasks: it holds a canary either way, so a utility score
         # describes exactly the setup that was attacked.
@@ -171,6 +213,7 @@ class VulnBotFactory:
             canary=canary,
             client=self._client,
             max_tool_rounds=self._max_tool_rounds,
+            limiter=self._limiter,
         )
         return Trial(
             target=bot,

@@ -8,10 +8,16 @@ import pytest
 
 from redline.attacks import load_corpus
 from redline.core import Attack, AttackCategory, Document, Outcome, RunResult
-from redline.demo import CANARY_PREFIX, VulnBotFactory, seeded_canary
+from redline.demo import CANARY_PREFIX, Channel, VulnBotFactory, seeded_canary
 from redline.demo.vulnbot import build_system_prompt, leak_phrases
-from redline.runner import RunConfig, TrialFactory, config_hash, run_attacks
-from redline.targets import OpenAICompatConfig
+from redline.runner import (
+    EstimatingFactory,
+    RunConfig,
+    TrialFactory,
+    config_hash,
+    run_attacks,
+)
+from redline.targets import OpenAICompatConfig, RateLimiter
 
 BACKEND = OpenAICompatConfig(base_url="http://test/v1", model="m")
 DIRECT = Attack(id="d-01", name="x", category=AttackCategory.DIRECT_INJECTION, prompt="Hi")
@@ -247,3 +253,77 @@ def test_hash_changes_when_leak_phrases_change(monkeypatch: pytest.MonkeyPatch) 
     before = hash_of(VulnBotFactory(BACKEND, "prompt"))
     monkeypatch.setattr("redline.demo.vulnbot._ROLE_LEAK_PHRASE", "something else")
     assert hash_of(VulnBotFactory(BACKEND, "prompt")) != before
+
+
+# --- rate limit -------------------------------------------------------------
+
+
+async def test_every_model_call_in_a_tool_loop_waits_for_the_limiter() -> None:
+    waits: list[float] = []
+
+    async def sleep(seconds: float) -> None:
+        waits.append(seconds)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        # Ask for an email forever, so the bot uses every round.
+        call = {"id": "c", "function": {"name": "send_email", "arguments": '{"to": "a@b.example"}'}}
+        return httpx.Response(200, json={"choices": [{"message": {"tool_calls": [call]}}]})
+
+    limiter = RateLimiter(60, clock=lambda: 0.0, sleep=sleep)
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    factory = VulnBotFactory(BACKEND, "prompt", client=client, limiter=limiter, max_tool_rounds=2)
+    trial = factory.make_trial(DIRECT, 0)
+    await trial.target.send(trial.message)
+
+    assert waits == [1, 2]  # three calls: the first goes at once
+    assert hash_of(factory) == hash_of(VulnBotFactory(BACKEND, "prompt", max_tool_rounds=2))
+
+
+# --- worst-case estimate ----------------------------------------------------
+
+CAPPED = BACKEND.model_copy(update={"extra_body": {"max_tokens": 300}})
+
+
+@pytest.mark.parametrize("channel", ["prompt", "tool"])
+def test_estimate_assumes_every_tool_round_is_used(channel: Channel) -> None:
+    factory: EstimatingFactory = VulnBotFactory(CAPPED, channel, max_tool_rounds=2)
+    estimate = factory.estimate_attempt(DIRECT)
+    assert (estimate.requests, estimate.output_tokens) == (3, 900)
+
+
+def test_estimated_input_grows_faster_than_the_number_of_calls() -> None:
+    one, two, three = (
+        VulnBotFactory(CAPPED, "tool", max_tool_rounds=rounds)
+        .estimate_attempt(INDIRECT)
+        .input_tokens
+        for rounds in (1, 2, 3)
+    )
+    # Each extra call re-sends a longer history than the one before.
+    assert three - two > two - one > 0
+
+
+def test_longer_documents_mean_a_bigger_estimate() -> None:
+    long = INDIRECT.model_copy(
+        update={"documents": (Document(title="Review", content="word " * 600),)}
+    )
+    for channel in ("prompt", "tool"):
+        factory = VulnBotFactory(CAPPED, channel)
+        short_input = factory.estimate_attempt(INDIRECT).input_tokens
+        assert factory.estimate_attempt(long).input_tokens >= short_input + 1000
+
+
+@pytest.mark.parametrize(
+    ("extra_body", "per_call"),
+    [({"max_completion_tokens": 50}, 50), ({"max_tokens": 10, "max_completion_tokens": 20}, 20)],
+)
+def test_either_output_cap_setting_is_used(extra_body: dict[str, Any], per_call: int) -> None:
+    backend = BACKEND.model_copy(update={"extra_body": extra_body})
+    estimate = VulnBotFactory(backend, "prompt", max_tool_rounds=1).estimate_attempt(DIRECT)
+    assert estimate.output_tokens == 2 * per_call
+
+
+@pytest.mark.parametrize("extra_body", [{}, {"max_tokens": 0}, {"max_tokens": "300"}])
+def test_no_estimate_without_an_output_cap(extra_body: dict[str, Any]) -> None:
+    backend = BACKEND.model_copy(update={"extra_body": extra_body})
+    with pytest.raises(ValueError, match="max_tokens"):
+        VulnBotFactory(backend, "prompt").estimate_attempt(DIRECT)

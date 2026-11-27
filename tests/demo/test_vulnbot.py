@@ -6,7 +6,7 @@ import httpx
 import pytest
 
 from redline.attacks import render_documents
-from redline.core import Document
+from redline.core import Document, Usage
 from redline.demo import (
     CANARY_PREFIX,
     FakeTool,
@@ -287,6 +287,35 @@ async def test_bots_built_for_different_attacks_do_not_share_documents() -> None
     assert "Shipping FAQ" in sent(seen_a, 1)["messages"][-1]["content"]
     assert "Different text." in sent(seen_b, 1)["messages"][-1]["content"]
     assert "Shipping FAQ" not in sent(seen_b, 1)["messages"][-1]["content"]
+
+
+@pytest.mark.parametrize(
+    ("second_usage", "expected"),
+    [
+        (
+            {"prompt_tokens": 80, "completion_tokens": 7},
+            Usage(requests=2, input_tokens=130, output_tokens=12),
+        ),
+        # One round without counts makes the totals unknown, but both calls are still counted.
+        (None, Usage(requests=2)),
+    ],
+)
+async def test_usage_is_added_up_across_tool_rounds(
+    second_usage: dict[str, int] | None, expected: Usage
+) -> None:
+    replies = [
+        (call_message(SEARCH), {"prompt_tokens": 50, "completion_tokens": 5}),
+        ({"content": "done"}, second_usage),
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        message, usage = replies.pop(0)
+        return httpx.Response(200, json={"choices": [{"message": message}], "usage": usage})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    bot = VulnBot(backend(), client=client, tools=[search_docs_tool(DOCS)])
+
+    assert (await bot.send("go")).usage == expected
 
 
 def test_bad_agent_settings_are_rejected() -> None:
