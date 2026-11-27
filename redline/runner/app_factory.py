@@ -128,8 +128,12 @@ class FunctionFactory(_AppFactory):
 
     Documents of an indirect attack are pasted into the prompt by default. With
     `documents="context"` your function gets them in `context.documents` and must feed them to
-    your retriever. Name that tool as `retrieval_tool` so attempts where it was never called
-    are counted as "not delivered"; without it Redline trusts that they were read.
+    your retriever. Then either name that tool as `retrieval_tool`, so attempts where it was
+    never called are counted as "not delivered", or set `assume_delivered=True` to state that
+    your function always puts the documents in front of the model.
+
+    Only the TYPE of an error raised by your function is saved, because its message may hold
+    private data. `save_error_messages=True` keeps messages while you debug.
     """
 
     def __init__(
@@ -144,8 +148,10 @@ class FunctionFactory(_AppFactory):
         leak_phrases: Sequence[str] = (),
         documents: DocumentDelivery = "prompt",
         retrieval_tool: str | None = None,
+        assume_delivered: bool = False,
         max_calls_per_attempt: int | None = None,
         safe_to_retry: bool = False,
+        save_error_messages: bool = False,
     ) -> None:
         super().__init__(
             tool_names=tool_names,
@@ -155,8 +161,17 @@ class FunctionFactory(_AppFactory):
         if not version.strip():
             # Redline can't see your code, so this is what marks two runs as different.
             raise ValueError("give your app a version label, and change it when the app changes")
-        if retrieval_tool is not None and documents != "context":
-            raise ValueError('retrieval_tool only applies with documents="context"')
+        if documents == "context":
+            # Silently assuming they were read would count unread attacks as "resisted".
+            if (retrieval_tool is None) != assume_delivered:
+                raise ValueError(
+                    'documents="context" needs exactly one of retrieval_tool or '
+                    "assume_delivered=True"
+                )
+        elif retrieval_tool is not None or assume_delivered:
+            raise ValueError(
+                'retrieval_tool and assume_delivered only apply with documents="context"'
+            )
         if canary is not None:
             CanaryDetector(canary, public_prefix="")  # fail now if it is too short
         self._function = function
@@ -166,7 +181,9 @@ class FunctionFactory(_AppFactory):
         self._canary = canary
         self._documents: DocumentDelivery = documents
         self._retrieval_tool = retrieval_tool
+        self._assume_delivered = assume_delivered
         self.safe_to_retry = safe_to_retry
+        self.save_error_messages = save_error_messages
 
     @property
     def name(self) -> str:
@@ -184,6 +201,7 @@ class FunctionFactory(_AppFactory):
             "model": self._model,
             "documents": self._documents,
             "retrieval_tool": self._retrieval_tool,
+            "assume_delivered": self._assume_delivered,
             "probe_message": self._message(_PROBE),
             **self._describe_judging(self._canary),
         }
@@ -295,8 +313,15 @@ class HttpFactory(_AppFactory):
         }
 
     def preflight(self) -> None:
+        canary = self._canary.casefold()
         for name in self._config.env_names:
-            read_secret(name)  # checked, then thrown away
+            value = read_secret(name).casefold()  # checked, then thrown away
+            # Header values are blanked out of replies, which would hide a leaked canary.
+            if value in canary or canary in value:
+                raise ValueError(
+                    f"environment variable {name} overlaps the canary. The canary must not "
+                    "be sent in a header, or leaks of it would be hidden"
+                )
 
     def make_trial(self, attack: Case, seed: int) -> Trial:
         target = HttpTemplateTarget(self._config, self._client, limiter=self._limiter)

@@ -24,6 +24,11 @@ Reply = str | TargetResponse
 AgentFunction = Callable[[str, TrialContext], Reply | Awaitable[Reply]]
 
 
+class AgentReplyError(TypeError):
+    """Redline's own complaint about what a function returned. Its message holds no data from
+    the app, so it is safe to save."""
+
+
 class PythonCallableTarget:
     """A Target that calls your function. Build a new one per attempt (the context differs).
 
@@ -70,10 +75,10 @@ class PythonCallableTarget:
             return reply
         if isinstance(reply, str):
             if self._require_full_response:
-                raise TypeError(
+                raise AgentReplyError(
                     "return a TargetResponse with its tool_calls (empty if none): a string "
                     "can't show whether a tool was called"
                 )
             return TargetResponse(text=reply, model=self._model, latency_ms=latency_ms)
         # Turning None or a dict into text would be judged as a real reply.
-        raise TypeError(f"the function must return str or TargetResponse, not {type(reply)}")
+        raise AgentReplyError(f"the function must return str or TargetResponse, not {type(reply)}")

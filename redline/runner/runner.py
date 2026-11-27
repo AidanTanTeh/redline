@@ -19,6 +19,7 @@ from redline.runner.trial import (
     config_hash,
     may_retry,
 )
+from redline.targets import AgentReplyError
 
 # Finish reasons meaning the target never gave a usable answer. "content_filter" is the
 # OpenAI-style value for a reply the provider blocked: that isn't evidence the target itself
@@ -146,6 +147,15 @@ def _make_budget(
     return budget, worst_cases
 
 
+def _error_text(factory: TrialFactory, error: Exception | None) -> str:
+    """What gets saved about a failure. A factory with `save_error_messages = False` runs
+    code whose messages may hold private data, so only the error type is kept."""
+    name = type(error).__name__
+    if getattr(factory, "save_error_messages", True) or isinstance(error, AgentReplyError):
+        return f"{name}: {error}"
+    return f"{name} (message hidden; set save_error_messages=True to see it)"
+
+
 async def _run_attempt(
     attack: Case,
     attempt: int,
@@ -230,14 +240,16 @@ async def _run_attempt(
             # It was tried and failed; the cap only stopped the retry.
             return record(
                 Outcome.ERROR,
-                error=f"{type(last_error).__name__}: {last_error} (retry stopped by the cap)",
+                error=f"{_error_text(factory, last_error)} (retry stopped by the cap)",
                 retries=tries_sent - 1,
             )
-        return record(Outcome.ERROR, error=str(failure), retries=failure.retries)
+        return record(
+            Outcome.ERROR, error=_error_text(factory, failure.cause), retries=failure.retries
+        )
     except Exception as error:
         # Caught here on purpose: an escaped exception would make the TaskGroup cancel every
         # other attempt in the run.
-        return record(Outcome.ERROR, error=f"{type(error).__name__}: {error}", retries=retries)
+        return record(Outcome.ERROR, error=_error_text(factory, error), retries=retries)
 
     return record(
         classify(response, detections, delivered),

@@ -6,6 +6,7 @@ from redline.targets.limiter import RateLimiter
 from redline.targets.openai_compat import ChatTurn, OpenAICompatConfig, OpenAICompatTarget
 from redline.targets.python_callable import (
     AgentFunction,
+    AgentReplyError,
     PythonCallableTarget,
     Reply,
     TrialContext,
@@ -13,6 +14,7 @@ from redline.targets.python_callable import (
 
 __all__ = [
     "AgentFunction",
+    "AgentReplyError",
     "ChatTurn",
     "HttpTemplateConfig",
     "HttpTemplateTarget",

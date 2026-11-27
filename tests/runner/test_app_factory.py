@@ -174,7 +174,10 @@ async def test_documents_arrive_exactly_one_way(delivery: str) -> None:
         seen.append((prompt, context))
         return "no"
 
-    await outcome(function_factory(agent, documents=delivery), INDIRECT)
+    options: dict[str, Any] = {"documents": delivery}
+    if delivery == "context":
+        options["assume_delivered"] = True
+    await outcome(function_factory(agent, **options), INDIRECT)
 
     prompt, context = seen[0]
     assert ("Great lamp!" in prompt) is (delivery == "prompt")
@@ -282,7 +285,7 @@ def test_the_timeout_does_not_change_the_hash() -> None:
 @pytest.mark.parametrize(
     "options",
     [
-        {"documents": "context"},
+        {"documents": "context", "assume_delivered": True},
         {"canary": CANARY},
         {"tool_names": ["x"]},
         {"leak_phrases": ["x"]},
@@ -297,6 +300,44 @@ def test_the_version_label_changes_the_hash() -> None:
     assert hash_of(function_factory()) != hash_of(FunctionFactory(refuse, version="v2"))
 
 
+# --- error messages ---------------------------------------------------------
+
+
+def crash(prompt: str, context: TrialContext) -> str:
+    raise KeyError("customer@private.example")
+
+
+@pytest.mark.parametrize("keep", [False, True])
+async def test_your_functions_error_messages_are_hidden_unless_asked_for(keep: bool) -> None:
+    factory = function_factory(crash, save_error_messages=keep)
+
+    report = await run_attacks([DIRECT], factory, RunConfig(), cases_hash="c")
+
+    error = report.results[0].error
+    assert error is not None and error.startswith("KeyError")
+    assert ("customer@private.example" in report.model_dump_json()) is keep
+
+
+async def test_redlines_own_complaint_about_the_reply_is_always_shown() -> None:
+    factory = function_factory(tool_names=["send_email"])
+    report = await run_attacks([EMAIL], factory, RunConfig(), cases_hash="c")
+    assert "tool_calls" in (report.results[0].error or "")
+
+
+async def test_hidden_errors_do_not_change_what_is_retried() -> None:
+    calls: list[str] = []
+
+    async def agent(prompt: str, context: TrialContext) -> str:
+        calls.append(prompt)
+        raise httpx.ConnectError("private")
+
+    factory = function_factory(agent, safe_to_retry=True)
+    report = await run_attacks([DIRECT], factory, RunConfig(), cases_hash="c", sleep=no_sleep)
+
+    assert len(calls) == 3
+    assert "private" not in report.model_dump_json()
+
+
 # --- mistakes caught early --------------------------------------------------
 
 
@@ -308,6 +349,12 @@ def test_the_version_label_changes_the_hash() -> None:
         ({"max_calls_per_attempt": 0}, "at least 1"),
         ({"canary": "short"}, "at least"),
         ({"retrieval_tool": "search"}, "context"),
+        ({"assume_delivered": True}, "context"),
+        ({"documents": "context"}, "exactly one"),
+        (
+            {"documents": "context", "retrieval_tool": "s", "assume_delivered": True},
+            "exactly one",
+        ),
     ],
 )
 def test_bad_function_settings_are_rejected(options: dict[str, Any], message: str) -> None:
@@ -331,6 +378,22 @@ def test_a_version_label_is_required() -> None:
 def test_bad_http_settings_are_rejected(options: dict[str, Any], message: str) -> None:
     with pytest.raises(ValueError, match=message):
         http_factory(**options)
+
+
+@pytest.mark.parametrize("value", [CANARY, CANARY.upper(), f"x-{CANARY}", CANARY[:10]])
+def test_a_header_value_may_not_overlap_the_canary(
+    monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    monkeypatch.setenv("APP_TOKEN", value)
+    config = http_config(headers={"X-Debug": "${APP_TOKEN}"})
+    with pytest.raises(ValueError, match="overlaps the canary"):
+        http_factory(config=config).preflight()
+
+
+def test_an_unrelated_header_value_passes_preflight(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("APP_TOKEN", "fake-token-9999")
+    config = http_config(headers={"Authorization": "Bearer ${APP_TOKEN}"})
+    http_factory(config=config).preflight()
 
 
 def test_preflight_checks_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:
