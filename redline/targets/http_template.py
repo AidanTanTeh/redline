@@ -1,7 +1,6 @@
 """Adapter for any web app with a JSON endpoint, described by a request template."""
 
 import json
-import os
 import re
 import time
 from typing import Any, Literal, Self
@@ -11,6 +10,7 @@ from pydantic import ConfigDict, Field, model_validator
 
 from redline.core import RedlineModel, TargetResponse, ToolCall
 from redline.targets.limiter import RateLimiter
+from redline.targets.secrets import is_safe_header_text, read_secret
 
 PLACEHOLDER = "{prompt}"
 # ${NAME} in a header value is replaced by that environment variable at send time.
@@ -61,6 +61,10 @@ class HttpTemplateConfig(RedlineModel):
     @model_validator(mode="after")
     def _secret_headers_come_from_the_environment(self) -> Self:
         for name, value in self.headers.items():
+            # E.g. "Bearer ${KEY} " with a stray space would be rejected at send time, in an
+            # error quoting the whole header, key included.
+            if not is_safe_header_text(value):
+                raise ValueError(f"header {name} has spaces at the ends or unusual characters")
             secret = any(hint in name.casefold() for hint in _SECRET_HEADER_HINTS)
             if secret and not _ENV_REFERENCE.search(value):
                 # Name the header only: the value may be a real key.
@@ -106,20 +110,7 @@ def _lookup(data: Any, path: str) -> Any:
 
 
 def _header_value(template: str) -> str:
-    def read(match: re.Match[str]) -> str:
-        name = match.group(1)
-        value = os.environ.get(name)
-        if not value:
-            raise RuntimeError(f"Environment variable {name} is not set (or is empty).")
-        # The HTTP library quotes a bad header in its error, which would save the secret.
-        if not (value.isascii() and value.isprintable()):
-            raise RuntimeError(
-                f"Environment variable {name} has a newline or other character that "
-                "can't go in a header."
-            )
-        return value
-
-    return _ENV_REFERENCE.sub(read, template)
+    return _ENV_REFERENCE.sub(lambda match: read_secret(match.group(1)), template)
 
 
 class HttpTemplateTarget:

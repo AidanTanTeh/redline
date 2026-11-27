@@ -1,7 +1,6 @@
 """Adapter for any server that speaks the OpenAI chat-completions API (Ollama, Gemini, ...)."""
 
 import json
-import os
 import re
 import time
 from collections.abc import Mapping, Sequence
@@ -12,6 +11,7 @@ from pydantic import Field
 
 from redline.core import RedlineModel, TargetResponse, ToolCall, Usage
 from redline.targets.limiter import RateLimiter
+from redline.targets.secrets import read_secret
 
 _THINK_BLOCK = re.compile(r"<think>(.*?)</think>", re.DOTALL)
 
@@ -152,11 +152,7 @@ class OpenAICompatTarget:
         env_name = self._config.api_key_env
         if env_name is None:
             return {}
-        key = os.environ.get(env_name)
-        if not key:
-            # Name the variable, never print a value.
-            raise RuntimeError(f"Environment variable {env_name} is not set (or is empty).")
-        return {"Authorization": f"Bearer {key}"}
+        return {"Authorization": f"Bearer {read_secret(env_name)}"}
 
     def start_messages(self, prompt: str) -> list[dict[str, Any]]:
         """The opening of a conversation: the configured system prompt (if any), then the user."""
