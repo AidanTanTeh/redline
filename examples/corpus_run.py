@@ -7,6 +7,12 @@ Run from the repo root:
     uv run python examples/corpus_run.py --channel tool ii-review-note-01
     uv run python examples/corpus_run.py --all --repeats 3      # every attack (slow)
     uv run python examples/corpus_run.py --benign --repeats 3   # every benign task
+    uv run python examples/corpus_run.py --all --dry-run        # show the estimate only
+    uv run python examples/corpus_run.py --max-requests 12 --partial --rpm 20
+
+Every run first prints a worst-case estimate. --price-as shows (and lets --max-cost cap) what
+the run would cost at a hosted model's prices; requests still go only to local Ollama.
+A run over a cap is refused unless --partial, which runs until the cap is reached.
 
 With --benign, "succeeded" means the reply passed the task check. Each finished attempt is appended
 to runs/<time>.jsonl straight away, so stopping a long run keeps what it already did. The
@@ -26,12 +32,28 @@ import httpx
 from redline.attacks import load_corpus
 from redline.benign import load_tasks
 from redline.core import Case, Outcome, RunResult
-from redline.demo import Channel, VulnBotFactory
-from redline.runner import RunConfig, RunReport, run_attacks
-from redline.targets import OpenAICompatConfig
+from redline.demo import VulnBotFactory
+from redline.metrics import total_usage
+from redline.runner import (
+    Pricing,
+    RunConfig,
+    RunEstimate,
+    RunReport,
+    estimate_run,
+    measured_seconds_per_attempt,
+    run_attacks,
+)
+from redline.targets import OpenAICompatConfig, RateLimiter
 
 DEFAULT_ATTACK_IDS = ["di-override-01", "spl-repeat-above-01", "sid-polite-01", "ii-review-note-01"]
 RUNS_DIR = Path("runs")
+# Ask for --yes above this worst-case cost.
+CONFIRM_ABOVE_USD = 0.50
+PRICES = {
+    "local": Pricing.free(),
+    # Paid tier, read 2026-11-27 from https://aistudio.google.com/docs/pricing. Check before use.
+    "gemini-3.5-flash-lite": Pricing(input_per_mtok=0.30, output_per_mtok=2.50),
+}
 
 
 def parse_args() -> argparse.Namespace:
@@ -46,6 +68,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--base-seed", type=int, default=0)
     # Above 0 so that repeats can differ. At 0 they are nearly the same sample counted twice.
     parser.add_argument("--temperature", type=float, default=0.7)
+    parser.add_argument("--max-requests", type=int, help="cap on model calls for the run")
+    parser.add_argument("--max-cost", type=float, help="cap in US dollars (see --price-as)")
+    parser.add_argument("--rpm", type=float, help="limit requests per minute")
+    parser.add_argument("--price-as", choices=list(PRICES), default="local")
+    parser.add_argument(
+        "--partial", action="store_true", help="start even if the worst case is over a cap"
+    )
+    parser.add_argument(
+        "--yes", action="store_true", help=f"allow a worst case over ${CONFIRM_ABOVE_USD:.2f}"
+    )
+    parser.add_argument("--dry-run", action="store_true", help="print the estimate and stop")
     return parser.parse_args()
 
 
@@ -64,22 +97,71 @@ def describe_result(result: RunResult) -> str:
     )
 
 
+def previous_speed(factory: VulnBotFactory, cases_hash: str) -> float | None:
+    """Seconds per attempt from the most useful saved run with exactly these bot settings.
+
+    Prefers a run of the same case set (tasks answer faster than attacks), then the one with
+    the most attempts (a tiny run is mostly model loading), then the newest.
+    """
+    found: list[tuple[bool, int, str, float]] = []
+    for path in RUNS_DIR.glob("*.report.json"):
+        try:
+            report = RunReport.model_validate_json(path.read_text(encoding="utf-8"))
+        except ValueError:
+            continue  # an unreadable report only means one fewer measurement
+        seconds = measured_seconds_per_attempt(report, factory)
+        if seconds is not None:
+            same_set = report.cases_hash == cases_hash
+            found.append((same_set, len(report.results), path.name, seconds))
+    return max(found)[3] if found else None
+
+
+def print_estimate(estimate: RunEstimate, price_name: str) -> None:
+    print(
+        f"worst case (a ceiling guess, usually far above real use): {estimate.requests} model "
+        f"calls, {estimate.input_tokens:,} input + {estimate.output_tokens:,} output tokens, "
+        f"${estimate.cost_usd:.4f} at {price_name} prices (retries not included)"
+    )
+    if estimate.seconds is None:
+        print("time: unknown (no earlier run with these settings)")
+    else:
+        print(f"time: about {estimate.seconds / 60:.1f} min, based on an earlier run")
+
+
+def print_usage(report: RunReport, pricing: Pricing, price_name: str) -> None:
+    used = total_usage(report.results)
+    cost = pricing.cost_usd(used.input_tokens, used.output_tokens)
+    print(
+        f"used{'' if used.complete else ' AT LEAST'}: {used.requests} model calls, "
+        f"{used.input_tokens:,} input + {used.output_tokens:,} output tokens, ${cost:.4f} at "
+        f"{price_name} prices"
+    )
+    if not used.complete:
+        print(
+            f"  not recorded: {used.unrecorded_attempts} of {used.attempts} attempts and "
+            f"{used.failed_tries} failed tries"
+        )
+
+
 async def run(
     cases: list[Case],
     backend: OpenAICompatConfig,
-    channel: Channel,
+    args: argparse.Namespace,
     config: RunConfig,
     cases_hash: str,
     on_result: Callable[[RunResult], None],
 ) -> RunReport:
+    limiter = None if args.rpm is None else RateLimiter(args.rpm)
     # One shared connection pool for the whole run.
     async with httpx.AsyncClient() as client:
         return await run_attacks(
             cases,
-            VulnBotFactory(backend, channel, client=client),
+            VulnBotFactory(backend, args.channel, client=client, limiter=limiter),
             config,
             cases_hash=cases_hash,
             on_result=on_result,
+            pricing=PRICES[args.price_as],
+            allow_over_estimate=args.partial,
         )
 
 
@@ -112,8 +194,36 @@ def main() -> None:
         # Thinking off, as in the other examples. It is saved in the report's target settings.
         extra_body={"reasoning_effort": "none", "max_tokens": 300},
     )
-    config = RunConfig(repeats=args.repeats, base_seed=args.base_seed)
+    config = RunConfig(
+        repeats=args.repeats,
+        base_seed=args.base_seed,
+        max_requests=args.max_requests,
+        max_cost_usd=args.max_cost,
+    )
     total = len(cases) * config.repeats
+
+    pricing = PRICES[args.price_as]
+    factory = VulnBotFactory(backend, args.channel)
+    estimate = estimate_run(
+        cases,
+        factory,
+        config,
+        pricing,
+        seconds_per_attempt=previous_speed(factory, cases_hash),
+        requests_per_minute=args.rpm,
+    )
+    print_estimate(estimate, args.price_as)
+    if args.dry_run:
+        return
+    # run_attacks enforces the caps too. Checking here avoids leaving empty result files.
+    over_requests = args.max_requests is not None and estimate.requests > args.max_requests
+    over_cost = args.max_cost is not None and estimate.cost_usd > args.max_cost
+    if (over_requests or over_cost) and not args.partial:
+        sys.exit("refused: the worst case is over your cap. Run less, raise it, or use --partial")
+    # A cost cap at or below the threshold already guarantees the spend stays small.
+    small_cap = args.max_cost is not None and args.max_cost <= CONFIRM_ABOVE_USD
+    if estimate.cost_usd > CONFIRM_ABOVE_USD and not small_cap and not args.yes:
+        sys.exit(f"worst case is over ${CONFIRM_ABOVE_USD:.2f}. Add --yes to run it.")
 
     RUNS_DIR.mkdir(exist_ok=True)
     stem = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
@@ -133,7 +243,7 @@ def main() -> None:
             out.flush()
             print(f"[{done}/{total}] {describe_result(result)}", flush=True)
 
-        report = asyncio.run(run(cases, backend, args.channel, config, cases_hash, save))
+        report = asyncio.run(run(cases, backend, args, config, cases_hash, save))
 
     # The whole report (settings, hashes, times, results) goes in a second file.
     report_path = RUNS_DIR / f"{stem}.report.json"
@@ -151,6 +261,7 @@ def main() -> None:
     print(f"outcomes (raw counts, not a rate; {meaning}):")
     for outcome in Outcome:
         print(f"  {outcome:13} {counts[outcome]}")
+    print_usage(report, pricing, args.price_as)
     print(f"saved: {results_path} and {report_path}")
 
 

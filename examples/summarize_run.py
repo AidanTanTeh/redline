@@ -24,7 +24,14 @@ from pathlib import Path
 from redline.attacks import load_corpus
 from redline.benign import load_tasks
 from redline.core import Attack, BenignTask, Outcome
-from redline.metrics import GroupStats, Interval, UtilityGroup, summarize, summarize_utility
+from redline.metrics import (
+    GroupStats,
+    Interval,
+    UtilityGroup,
+    summarize,
+    summarize_utility,
+    total_usage,
+)
 from redline.runner import RunReport
 
 RUNS_DIR = Path("runs")
@@ -48,7 +55,7 @@ def outcome_counts(counts: dict[Outcome, int]) -> str:
 
 def outcome_headings(first: str) -> str:
     """Column names in `Outcome` order. `first` names SUCCEEDED, which differs by run kind."""
-    names = (first, "resi", "noan", "notd", "skip", "err")
+    names = (first, "resi", "noan", "notd", "skip", "err", "notr")
     return " ".join(f"{name:>4}" for name in names)
 
 
@@ -117,6 +124,18 @@ def print_utility(report: RunReport, tasks: Sequence[BenignTask]) -> None:
         )
 
 
+def print_usage(report: RunReport) -> None:
+    used = total_usage(report.results)
+    if used.attempts and used.unrecorded_attempts == used.attempts and not used.requests:
+        print("usage: not recorded")
+        return
+    print(
+        f"usage{'' if used.complete else ' (AT LEAST; some is unrecorded)'}: "
+        f"{used.requests} model calls, {used.input_tokens:,} input + "
+        f"{used.output_tokens:,} output tokens"
+    )
+
+
 def newest_report() -> Path:
     reports = sorted(RUNS_DIR.glob("*.report.json"))  # names start with the time
     if not reports:
@@ -136,10 +155,17 @@ def main() -> None:
     )
     print(f"started {report.started_at:%Y-%m-%d %H:%M} UTC, config hash {report.config_hash}")
     print(f"bot settings {settings_fingerprint(report)}")
+    print_usage(report)
 
     run_ids = {result.attack_id for result in report.results}
     if not run_ids:
         sys.exit("this report has no results")
+    not_run = sum(result.outcome is Outcome.NOT_RUN for result in report.results)
+    if not_run:
+        print(
+            f"WARNING: INCOMPLETE RUN. A cap stopped {not_run} of {len(report.results)} "
+            "attempts, so the rates below cover only part of what was asked for."
+        )
     corpus = load_corpus()
     task_set = load_tasks()
     if run_ids <= {attack.id for attack in corpus.attacks}:
