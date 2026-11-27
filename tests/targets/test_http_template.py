@@ -136,6 +136,16 @@ async def test_bad_statuses_raise_and_redirects_are_not_followed(status: int) ->
     assert seen == ["http://localhost:3000/api/chat"]
 
 
+async def test_error_messages_name_the_host_but_not_the_rest_of_the_url() -> None:
+    client = httpx.AsyncClient(transport=httpx.MockTransport(lambda _: httpx.Response(500)))
+    target = HttpTemplateTarget(config(url="http://localhost/hook/abc123?u=abc123"), client)
+
+    with pytest.raises(httpx.HTTPStatusError) as caught:
+        await target.send("a")
+
+    assert str(caught.value) == "HTTP 500 from localhost"
+
+
 # --- tool calls -------------------------------------------------------------
 
 TOOLS: dict[str, Any] = {

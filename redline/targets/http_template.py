@@ -222,7 +222,14 @@ class HttpTemplateTarget:
                 response = await self._request(client, headers, body)
         latency_ms = (time.perf_counter() - start) * 1000
 
-        response.raise_for_status()
+        if not response.is_success:
+            # Not raise_for_status(): its message includes the full url, which is saved with
+            # the results and may carry something private.
+            raise httpx.HTTPStatusError(
+                f"HTTP {response.status_code} from {response.request.url.host}",
+                request=response.request,
+                response=response,
+            )
         data = response.json()
         tool_calls = self._tool_calls(data)
         finish_reason = self._finish_reason(data)
