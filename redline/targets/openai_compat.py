@@ -10,7 +10,8 @@ from typing import Any
 import httpx
 from pydantic import Field
 
-from redline.core import RedlineModel, TargetResponse, ToolCall
+from redline.core import RedlineModel, TargetResponse, ToolCall, Usage
+from redline.targets.limiter import RateLimiter
 
 _THINK_BLOCK = re.compile(r"<think>(.*?)</think>", re.DOTALL)
 
@@ -97,6 +98,27 @@ def _parse_tool_calls(raw_calls: list[dict[str, Any]]) -> tuple[ToolCall, ...]:
     return tuple(calls)
 
 
+def _parse_usage(raw: object) -> Usage:
+    """Token counts for one request. Anything missing or malformed counts as unknown."""
+
+    def count(key: str) -> int | None:
+        value = raw.get(key) if isinstance(raw, dict) else None
+        # type() rather than isinstance(): in Python, True is also an int.
+        return value if type(value) is int and value >= 0 else None
+
+    prompt, completion, total = (
+        count("prompt_tokens"),
+        count("completion_tokens"),
+        count("total_tokens"),
+    )
+    output = completion
+    # Some servers (reported for Gemini) leave thinking tokens out of completion_tokens and
+    # only include them in the total. Take the larger figure so billed tokens aren't missed.
+    if prompt is not None and total is not None and total >= prompt:
+        output = max(total - prompt, completion or 0)
+    return Usage(requests=1, input_tokens=prompt, output_tokens=output)
+
+
 class ChatTurn(RedlineModel):
     """One model turn: what it said, plus the message to append to the history."""
 
@@ -109,10 +131,18 @@ class ChatTurn(RedlineModel):
 class OpenAICompatTarget:
     """A Target backed by an OpenAI-compatible /chat/completions endpoint."""
 
-    def __init__(self, config: OpenAICompatConfig, client: httpx.AsyncClient | None = None) -> None:
+    def __init__(
+        self,
+        config: OpenAICompatConfig,
+        client: httpx.AsyncClient | None = None,
+        *,
+        limiter: RateLimiter | None = None,
+    ) -> None:
         self._config = config
         # Optional shared client (tests inject a fake transport; the runner can share one pool).
         self._client = client
+        # Optional, and shared between targets that use the same quota.
+        self._limiter = limiter
 
     @property
     def name(self) -> str:
@@ -171,6 +201,8 @@ class OpenAICompatTarget:
         body = self._body(messages, tools)
         timeout = self._config.timeout_s
 
+        if self._limiter is not None:
+            await self._limiter.wait()  # before the timer: waiting isn't model latency
         start = time.perf_counter()
         if self._client is not None:
             response = await self._client.post(url, json=body, headers=headers, timeout=timeout)
@@ -199,5 +231,6 @@ class OpenAICompatTarget:
             latency_ms=latency_ms,
             finish_reason=choice.get("finish_reason"),
             tool_calls=tool_calls,
+            usage=_parse_usage(data.get("usage")),
         )
         return ChatTurn(response=target_response, assistant_message=_assistant_message(message))

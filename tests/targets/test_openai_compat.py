@@ -5,6 +5,7 @@ from typing import Any
 import httpx
 import pytest
 
+from redline.core import Usage
 from redline.targets import OpenAICompatConfig, OpenAICompatTarget, Target
 
 Handler = Callable[[httpx.Request], httpx.Response]
@@ -329,6 +330,38 @@ async def test_unexpected_response_shape_raises_value_error() -> None:
     target = make_target(lambda _: httpx.Response(200, json={"choices": []}))
     with pytest.raises(ValueError, match="Unexpected response shape"):
         await target.send("a")
+
+
+# --- usage ------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("raw", "input_tokens", "output_tokens"),
+    [
+        # Usual shape: total = prompt + completion.
+        ({"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120}, 100, 20),
+        # Hidden thinking tokens only show up in the total, and they are billed.
+        ({"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 620}, 100, 520),
+        ({"prompt_tokens": 100, "completion_tokens": 20}, 100, 20),
+        ({"prompt_tokens": 100, "total_tokens": 130}, 100, 30),
+        # A total that makes no sense is ignored.
+        ({"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 5}, 100, 20),
+        ({"completion_tokens": 20, "total_tokens": 120}, None, 20),
+        ({"prompt_tokens": "100", "completion_tokens": -1}, None, None),
+        ({"prompt_tokens": True}, None, None),
+        (None, None, None),
+        ("lots", None, None),
+    ],
+)
+async def test_usage_is_parsed_from_the_reply(
+    raw: object, input_tokens: int | None, output_tokens: int | None
+) -> None:
+    data = {"choices": [{"message": {"content": "hi"}}], "usage": raw}
+    response = await make_target(lambda _: httpx.Response(200, json=data)).send("a")
+
+    assert response.usage == Usage(
+        requests=1, input_tokens=input_tokens, output_tokens=output_tokens
+    )
 
 
 # --- protocol ---------------------------------------------------------------
