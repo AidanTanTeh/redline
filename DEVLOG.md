@@ -275,3 +275,30 @@ only if the document was read, which gives 44% (23–68%) from the same saved re
 is that three correct guesses about shipping time now fail. The tool bot often invented
 answers instead of searching; I haven't isolated why. The perfect prompt score suggests the
 tasks are easy, the intervals are wide, and the replies were reviewed by Claude, not by me.
+
+## 3.4: Cost estimation and caps
+
+Redline recorded no token usage, so cost couldn't be measured. Every response now carries its
+model calls and tokens, summed across the tool loop. Unknown counts stay unknown, not zero.
+Reports suggest Gemini's compatible endpoint leaves thinking tokens out of `completion_tokens`
+(not confirmed by Google), so the adapter also checks the total.
+
+Before a run, Redline now estimates the worst case. My plan assumed one call per attempt in
+the prompt channel, which was wrong: the bot can email there too, so both channels can make
+five. I first planned to count spending as calls finished, but that could overshoot a cap, and
+failed calls report no usage. Instead each try reserves its worst case before it is sent, then
+swaps in the real figure; unknown figures are charged in full. The cost is that a run stops
+early. The first refusal ends the run, and capped runs give every attack one attempt before
+any gets a second. Attempts never sent are marked `not_run` and left out of the rates.
+
+I added a requests-per-minute limiter that spaces calls evenly, and kept prices as something
+the caller supplies, since they change. The first time estimate said 10 minutes for a run that
+had taken 35, because it measured speed from shorter benign tasks; it now prefers a run of the
+same set.
+
+Live checks on qwen3:8b: no under-estimates across 92 first requests (1.3–1.5x the real
+size), a 6-call cap ran 2 of 4 attacks, and a 12-per-minute limit spaced calls 5 seconds
+apart. The whole-attempt estimate is very pessimistic (real input was about 5–19% of it in 8
+attempts). It's still an estimate, not a guarantee: tokens are guessed from text length, and
+repeated calls to one tool could exceed it. Waiting for the limiter counts toward the attempt
+timeout, daily and token limits aren't handled, and nothing has been tested against Gemini.
