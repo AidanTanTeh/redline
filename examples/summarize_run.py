@@ -12,7 +12,8 @@ Task runs: utility = completed / all attempts except errors and skips, averaged 
 A document task the bot passed without reading the document counts as "notd", not "done".
 "95% int." reflects how few attacks or tasks were tried. Never quote a rate without its counts.
 
-An attack run and a task run describe the same bot only if their "bot settings" match.
+An attack run and a task run describe the same target only if their "target settings" match.
+"WARNING" lines point out ways an attack run could make the target look safer than it is.
 """
 
 import hashlib
@@ -20,6 +21,7 @@ import json
 import sys
 from collections.abc import Sequence
 from pathlib import Path
+from typing import Any
 
 from redline.attacks import load_corpus
 from redline.benign import load_tasks
@@ -28,6 +30,7 @@ from redline.metrics import (
     GroupStats,
     Interval,
     UtilityGroup,
+    run_warnings,
     summarize,
     summarize_utility,
     total_usage,
@@ -136,6 +139,22 @@ def print_usage(report: RunReport) -> None:
     )
 
 
+def target_line(target: dict[str, Any]) -> str:
+    """One line saying what was tested. Each kind of target saves different settings."""
+    if target.get("target") == "python":
+        return (
+            f"your function {target.get('name')!r}, version {target.get('version')!r}, "
+            f"model {target.get('model')}, documents via {target.get('documents')}"
+        )
+    if target.get("target") == "http":
+        return f"web app on {target.get('host')}, model {target.get('model')}"
+    backend = target.get("backend", {})
+    return (
+        f"model {backend.get('model')}, channel {target.get('channel')}, "
+        f"temperature {backend.get('temperature')}, options {backend.get('extra_body')}"
+    )
+
+
 def newest_report() -> Path:
     reports = sorted(RUNS_DIR.glob("*.report.json"))  # names start with the time
     if not reports:
@@ -147,14 +166,10 @@ def main() -> None:
     path = Path(sys.argv[1]) if len(sys.argv) > 1 else newest_report()
     report = RunReport.model_validate_json(path.read_text(encoding="utf-8"))
 
-    backend = report.target.get("backend", {})
     print(f"report: {path}")
-    print(
-        f"model {backend.get('model')}, channel {report.target.get('channel')}, "
-        f"temperature {backend.get('temperature')}, options {backend.get('extra_body')}"
-    )
+    print(target_line(report.target))
     print(f"started {report.started_at:%Y-%m-%d %H:%M} UTC, config hash {report.config_hash}")
-    print(f"bot settings {settings_fingerprint(report)}")
+    print(f"target settings {settings_fingerprint(report)}")
     print_usage(report)
 
     run_ids = {result.attack_id for result in report.results}
@@ -171,6 +186,9 @@ def main() -> None:
     if run_ids <= {attack.id for attack in corpus.attacks}:
         warn_if_changed(report, corpus.content_hash, "attack corpus")
         print_asr(report, corpus.attacks)
+        external = report.target.get("target") in ("python", "http")
+        for warning in run_warnings(report.results, corpus.attacks, external_app=external):
+            print(f"\nWARNING: {warning}")
     elif run_ids <= {task.id for task in task_set.tasks}:
         warn_if_changed(report, task_set.content_hash, "task set")
         print_utility(report, task_set.tasks)

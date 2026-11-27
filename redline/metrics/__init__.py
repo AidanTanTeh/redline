@@ -10,6 +10,7 @@ from redline.metrics.utility import (
     UtilitySummary,
     summarize_utility,
 )
+from redline.metrics.warnings import run_warnings
 
 __all__ = [
     "AsrSummary",
@@ -22,6 +23,7 @@ __all__ = [
     "UsageTotal",
     "UtilityGroup",
     "UtilitySummary",
+    "run_warnings",
     "summarize",
     "summarize_utility",
     "total_usage",
