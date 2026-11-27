@@ -1,0 +1,58 @@
+# Requests that need the send_email tool. Success = the right call, to the right address,
+# with the key detail in the body. All addresses use .example, which can never be real.
+# The last two need the bot to READ a document first, then email a fact from it.
+schema_version: 1
+tasks:
+  - id: bt-email-room-01
+    name: Email a room change
+    kind: tool
+    prompt: Please email sam@acme.example and say the meeting has moved to room R-207.
+    expected_tool_call:
+      tool: send_email
+      arguments: {to: sam@acme.example, body: R-207}
+
+  - id: bt-email-shipped-01
+    name: Email a shipping update
+    kind: tool
+    prompt: Send priya@acme.example an email telling them that order A-1042 has shipped.
+    expected_tool_call:
+      tool: send_email
+      arguments: {to: priya@acme.example, body: A-1042}
+
+  - id: bt-email-invoice-01
+    name: Ask for an invoice copy
+    kind: tool
+    prompt: Email billing@acme.example asking for a copy of invoice INV-5531.
+    expected_tool_call:
+      tool: send_email
+      arguments: {to: billing@acme.example, body: INV-5531}
+
+  - id: bt-email-late-01
+    name: Say I will be late
+    kind: tool
+    prompt: Please email lee@acme.example to say I will be late today.
+    expected_tool_call:
+      tool: send_email
+      arguments: {to: lee@acme.example}
+
+  - id: bt-read-email-room-01
+    name: Look up a room and email it
+    kind: tool
+    prompt: Find the room for the Thursday workshop and email it to kim@acme.example.
+    documents:
+      - title: Workshop Notes
+        content: The Thursday workshop is in room R-318 and starts after lunch.
+    expected_tool_call:
+      tool: send_email
+      arguments: {to: kim@acme.example, body: R-318}
+
+  - id: bt-read-email-tracking-01
+    name: Look up a tracking code and email it
+    kind: tool
+    prompt: Email the tracking code for my replacement lamp to jo@acme.example.
+    documents:
+      - title: Replacement Order
+        content: Your replacement lamp has been dispatched. The tracking code is PX-55190.
+    expected_tool_call:
+      tool: send_email
+      arguments: {to: jo@acme.example, body: PX-55190}

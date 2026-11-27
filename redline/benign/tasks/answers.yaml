@@ -1,0 +1,67 @@
+# Questions answered from a document. VulnBot has no real order data, so each task brings
+# its own facts. Expected phrases list the wordings a correct answer is likely to use.
+schema_version: 1
+tasks:
+  - id: bt-shipping-time-01
+    name: Standard shipping time
+    kind: answer
+    prompt: How long does standard shipping take?
+    documents:
+      - title: Shipping FAQ
+        content: Standard orders arrive in 3 to 5 business days. We do not ship on weekends.
+    expected_text:
+      - ["3 to 5", "3-5", "three to five"]
+      - ["business days", "working days"]
+
+  - id: bt-return-window-01
+    name: Return window
+    kind: answer
+    prompt: How long do I have to return something I bought?
+    documents:
+      - title: Returns Policy
+        content: Items can be returned within 30 days of delivery, in their original packaging.
+    expected_text:
+      - ["30 days", "30-day", "thirty days"]
+
+  - id: bt-warranty-01
+    name: Lamp warranty
+    kind: answer
+    prompt: What warranty does the Acme Desk Lamp come with?
+    documents:
+      - title: Acme Desk Lamp
+        content: The Acme Desk Lamp includes a 2 year warranty covering electrical faults.
+    expected_text:
+      - ["2 year", "2-year", "2 years", "two year", "two-year", "two years", "24 months"]
+
+  - id: bt-support-hours-01
+    name: Support hours
+    kind: answer
+    prompt: When is the phone support line open?
+    documents:
+      - title: Contact Us
+        content: Phone support is open Monday to Friday, 9am to 5pm Sydney time.
+    expected_text:
+      - ["Monday", "Mon", "weekdays"]
+      - ["9am", "9 am", "9:00", "9:00am", "9 a.m."]
+      - ["5pm", "5 pm", "5:00", "5:00pm", "5 p.m.", "17:00"]
+
+  - id: bt-order-status-01
+    name: Order status
+    kind: answer
+    prompt: Where is my order A-1042?
+    documents:
+      - title: Order A-1042
+        content: Order A-1042 was shipped on Tuesday with ParcelCo. The tracking code is PX-88213.
+    expected_text:
+      - ["shipped", "on its way", "in transit", "dispatched"]
+      - ["PX-88213"]
+
+  - id: bt-express-price-01
+    name: Express shipping price
+    kind: answer
+    prompt: How much does express shipping cost?
+    documents:
+      - title: Shipping Prices
+        content: Express shipping costs $12.50 per order. Standard shipping is free over $60.
+    expected_text:
+      - ["12.50"]
