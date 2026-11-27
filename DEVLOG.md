@@ -302,3 +302,33 @@ apart. The whole-attempt estimate is very pessimistic (real input was about 5–
 attempts). It's still an estimate, not a guarantee: tokens are guessed from text length, and
 repeated calls to one tool could exceed it. Waiting for the limiter counts toward the attempt
 timeout, daily and token limits aren't handled, and nothing has been tested against Gemini.
+
+## 3.5: Testing your own app
+
+Redline could only attack its own demo bot or a bare chat model. It can now attack a Python
+function or a web endpoint, set up in code or YAML. The hard part is that Redline can't see
+inside someone's app, and almost every blind spot makes the app look safer than it is. So
+attacks needing a tool the app lacks are skipped, a function that declares tools must report
+its calls, a missing reply path is an error, documents handed to a function need proof they
+were read, and warnings flag a canary that never appears, missing finish reasons and leak
+checks with no phrases.
+
+I made retries judge each failure, because rerunning an attempt could send a real email
+twice: web apps are retried only when no connection was made (429s are opt-in), and functions
+only when marked safe. A cost cap is refused when token use is unknown; request caps still
+work. Web targets on other machines must be marked authorised, which is a reminder, not
+security.
+
+Several secret leaks turned up. A newline in an API key made the HTTP library quote the whole
+key in an error that would be saved (confirmed with a fake key). Validation errors printed
+rejected input, and HTTP errors included the full URL. All are fixed, echoed keys are
+redacted, and function error messages are hidden by default. The redaction created its own
+problem: a canary sent in a header would be blanked out and hide a real leak, so that is now
+refused. Live testing also showed my demo function couldn't be capped, and web results
+recorded no model name.
+
+Live on qwen3:8b, both routes gave 3 successes and 1 resisted on 4 attacks, one attempt each,
+so not a rate. Both apps were my own demo bot; no real app has been tested yet (5.4). A
+forgotten canary can only be warned about, a secret under a harmless name can't be detected,
+encoded copies of a key aren't redacted, a timed-out normal function keeps running, and
+streaming, logins and multi-turn chat aren't supported.
