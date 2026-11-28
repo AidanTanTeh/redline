@@ -15,6 +15,9 @@ from redline.detectors import (
     CANARY_PREFIX,
     CanaryDetector,
     Detector,
+    JudgeConfig,
+    JudgeContext,
+    LlmJudge,
     RegexDetector,
     TaskDetector,
     ToolCallDetector,
@@ -39,7 +42,12 @@ _PROBE = Attack(
 
 
 class VulnBotFactory:
-    """A `TrialFactory` for VulnBot in one delivery channel."""
+    """A `TrialFactory` for VulnBot in one delivery channel.
+
+    With `judge`, an LLM judge also rules on every ATTACK, alongside the exact-match
+    detectors. Benign tasks are still checked by `TaskDetector` only: "any detector
+    triggered" would let the wording check overrule the judge.
+    """
 
     def __init__(
         self,
@@ -50,10 +58,15 @@ class VulnBotFactory:
         scan_reasoning: bool = False,
         client: httpx.AsyncClient | None = None,
         limiter: RateLimiter | None = None,
+        judge: JudgeConfig | None = None,
+        judge_limiter: RateLimiter | None = None,
     ) -> None:
         # One limiter for every bot this factory builds. Not in describe(): it changes how
         # fast requests go, not what is sent.
         self._limiter = limiter
+        self._judge = judge
+        # Separate, because the judge may be on a different server with its own quota.
+        self._judge_limiter = judge_limiter
         self._backend = backend
         self._channel: Channel = channel
         self._max_tool_rounds = max_tool_rounds
@@ -75,7 +88,10 @@ class VulnBotFactory:
 
     def describe(self) -> dict[str, Any]:
         tools = channel_tools(self._channel, _PROBE.documents)
+        # Present only with a judge: even `"judge": None` would change every earlier hash.
+        judged = {} if self._judge is None else {"judge": self._judge.describe()}
         return {
+            **judged,
             "target": "vulnbot",
             # Left out: seed (set per attempt; the run's base_seed is hashed instead),
             # system_prompt (VulnBot replaces it), and api_key_env and timeout_s (neither
@@ -111,10 +127,13 @@ class VulnBotFactory:
         }
 
     def preflight(self) -> None:
-        name = self._backend.api_key_env
-        # Checks only that the variable has a value. The value is never kept or shown.
-        if name is not None and not os.environ.get(name):
-            raise RuntimeError(f"Environment variable {name} is not set (or is empty).")
+        names = [self._backend.api_key_env]
+        if self._judge is not None:
+            names.append(self._judge.api_key_env)
+        for name in names:
+            # Checks only that the variable has a value. The value is never kept or shown.
+            if name is not None and not os.environ.get(name):
+                raise RuntimeError(f"Environment variable {name} is not set (or is empty).")
 
     def _detectors(self, attack: Case, canary: str) -> tuple[Detector, ...]:
         # A benign task is judged only on whether it was completed.
@@ -145,6 +164,12 @@ class VulnBotFactory:
                         scan_tool_calls=True,
                     )
                 )
+        if self._judge is not None:
+            names = [tool.name for tool in channel_tools(self._channel, attack.documents)]
+            context = JudgeContext(secret=canary, system_prompt=build_system_prompt(canary, names))
+            detectors.append(
+                LlmJudge(self._judge, context, client=self._client, limiter=self._judge_limiter)
+            )
         return tuple(detectors)
 
     def _output_token_cap(self) -> int:
@@ -162,6 +187,9 @@ class VulnBotFactory:
         Assumes each tool is called at most once per round. A model asking for the same tool
         several times in one reply would add more input than this counts.
         """
+        if self._judge is not None:
+            # Estimating without the judge's calls would let a capped run overspend.
+            raise ValueError("estimating or capping a run with a judge isn't supported yet")
         max_output = self._output_token_cap()
         canary = seeded_canary(0, case.id)  # every canary is the same length
         _, message = make_vulnbot(case, self._backend, self._channel, canary=canary)

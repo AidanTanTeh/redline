@@ -13,6 +13,9 @@ from redline.detectors import (
     CANARY_PREFIX,
     CanaryDetector,
     Detector,
+    JudgeConfig,
+    JudgeContext,
+    LlmJudge,
     RegexDetector,
     TaskDetector,
     ToolCallDetector,
@@ -50,7 +53,13 @@ def _sha256(value: object) -> str:
 
 
 class _AppFactory:
-    """What every app target shares: which cases apply, how they're judged, the request cap."""
+    """What every app target shares: which cases apply, how they're judged, the request cap.
+
+    With `judge`, an LLM judge also rules on every attack (not on benign tasks). The judge is
+    sent your app's replies, tool calls and the canary, so with a hosted judge that data
+    leaves your machine. `judge_system_prompt` is your app's system prompt: without it the
+    judge can't recognise a paraphrased leak of it.
+    """
 
     def __init__(
         self,
@@ -58,15 +67,25 @@ class _AppFactory:
         tool_names: Sequence[str],
         leak_phrases: Sequence[str],
         max_calls_per_attempt: int | None,
+        judge: JudgeConfig | None,
+        judge_system_prompt: str | None,
+        judge_client: httpx.AsyncClient | None,
+        judge_limiter: RateLimiter | None,
     ) -> None:
         if isinstance(tool_names, str) or isinstance(leak_phrases, str):
             # A str is also a sequence of str, so "abc" would quietly mean "a", "b", "c".
             raise TypeError("tool_names and leak_phrases must be lists, not one string")
         if max_calls_per_attempt is not None and max_calls_per_attempt < 1:
             raise ValueError("max_calls_per_attempt must be at least 1")
+        if judge is None and judge_system_prompt is not None:
+            raise ValueError("judge_system_prompt does nothing without a judge")
         self._tool_names = tuple(sorted(name.casefold() for name in tool_names))
         self._leak_phrases = tuple(leak_phrases)
         self._max_calls = max_calls_per_attempt
+        self._judge = judge
+        self._judge_system_prompt = judge_system_prompt
+        self._judge_client = judge_client
+        self._judge_limiter = judge_limiter
 
     @property
     def has_tools(self) -> bool:
@@ -84,6 +103,9 @@ class _AppFactory:
 
     def estimate_attempt(self, case: Case) -> AttemptEstimate:
         """Only a request count: Redline can't see how many tokens your app uses."""
+        if self._judge is not None:
+            # Estimating without the judge's calls would let a capped run overspend.
+            raise ValueError("estimating or capping a run with a judge isn't supported yet")
         if self._max_calls is None:
             raise ValueError("set max_calls_per_attempt to estimate or cap a run")
         return AttemptEstimate(
@@ -110,15 +132,27 @@ class _AppFactory:
                 detectors.append(
                     RegexDetector.from_phrases("prompt_leak", phrases, scan_tool_calls=True)
                 )
+        if self._judge is not None:
+            context = JudgeContext(secret=canary, system_prompt=self._judge_system_prompt)
+            detectors.append(
+                LlmJudge(
+                    self._judge, context, client=self._judge_client, limiter=self._judge_limiter
+                )
+            )
         return tuple(detectors)
 
     def _describe_judging(self, canary: str | None) -> dict[str, Any]:
         # Hashes, not the values: the canary and phrases come from your system prompt.
-        return {
+        described: dict[str, Any] = {
             "canary": "seeded" if canary is None else _sha256(canary),
             "tool_names": list(self._tool_names),
             "leak_phrases_sha256": _sha256(list(self._leak_phrases)),
         }
+        # Added only with a judge, so earlier config hashes don't change.
+        if self._judge is not None:
+            described["judge"] = self._judge.describe()
+            described["judge_system_prompt_sha256"] = _sha256(self._judge_system_prompt)
+        return described
 
 
 class FunctionFactory(_AppFactory):
@@ -152,11 +186,19 @@ class FunctionFactory(_AppFactory):
         max_calls_per_attempt: int | None = None,
         safe_to_retry: bool = False,
         save_error_messages: bool = False,
+        judge: JudgeConfig | None = None,
+        judge_system_prompt: str | None = None,
+        judge_client: httpx.AsyncClient | None = None,
+        judge_limiter: RateLimiter | None = None,
     ) -> None:
         super().__init__(
             tool_names=tool_names,
             leak_phrases=leak_phrases,
             max_calls_per_attempt=max_calls_per_attempt,
+            judge=judge,
+            judge_system_prompt=judge_system_prompt,
+            judge_client=judge_client,
+            judge_limiter=judge_limiter,
         )
         if not version.strip():
             # Redline can't see your code, so this is what marks two runs as different.
@@ -207,7 +249,9 @@ class FunctionFactory(_AppFactory):
         }
 
     def preflight(self) -> None:
-        pass  # nothing can be checked without calling your function
+        # Nothing about your function can be checked without calling it.
+        if self._judge is not None and self._judge.api_key_env is not None:
+            read_secret(self._judge.api_key_env)  # checked, then thrown away
 
     def _message(self, case: Case) -> str:
         return render_prompt(case) if self._documents == "prompt" else case.prompt
@@ -265,11 +309,19 @@ class HttpFactory(_AppFactory):
         safe_to_retry: bool = False,
         client: httpx.AsyncClient | None = None,
         limiter: RateLimiter | None = None,
+        judge: JudgeConfig | None = None,
+        judge_system_prompt: str | None = None,
+        judge_client: httpx.AsyncClient | None = None,
+        judge_limiter: RateLimiter | None = None,
     ) -> None:
         super().__init__(
             tool_names=tool_names,
             leak_phrases=leak_phrases,
             max_calls_per_attempt=max_calls_per_attempt,
+            judge=judge,
+            judge_system_prompt=judge_system_prompt,
+            judge_client=judge_client,
+            judge_limiter=judge_limiter,
         )
         if tool_names and config.tool_calls_path is None:
             raise ValueError(
@@ -313,6 +365,8 @@ class HttpFactory(_AppFactory):
         }
 
     def preflight(self) -> None:
+        if self._judge is not None and self._judge.api_key_env is not None:
+            read_secret(self._judge.api_key_env)  # checked, then thrown away
         canary = self._canary.casefold()
         for name in self._config.env_names:
             value = read_secret(name).casefold()  # checked, then thrown away

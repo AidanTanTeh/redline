@@ -8,6 +8,7 @@ import yaml
 from pydantic import ConfigDict, Field, ValidationError
 
 from redline.core import RedlineModel
+from redline.detectors import JudgeConfig
 from redline.runner.app_factory import HttpFactory
 from redline.targets import HttpTemplateConfig, RateLimiter
 
@@ -30,6 +31,9 @@ class HttpAppConfig(RedlineModel):
     retry_rate_limits: bool = False
     safe_to_retry: bool = False
     requests_per_minute: float | None = Field(default=None, gt=0, allow_inf_nan=False)
+    # Optional LLM judge (`judge: {}` takes the local defaults) and your app's system prompt.
+    judge: JudgeConfig | None = None
+    judge_system_prompt: str | None = None
 
 
 class _NoDuplicatesLoader(yaml.SafeLoader):
@@ -96,6 +100,8 @@ def load_http_factory(path: Path, *, client: httpx.AsyncClient | None = None) ->
             safe_to_retry=config.safe_to_retry,
             client=client,
             limiter=limiter,
+            judge=config.judge,
+            judge_system_prompt=config.judge_system_prompt,
         )
     except ValueError as error:
         raise ConfigError(f"{path.name}: {error}") from None
