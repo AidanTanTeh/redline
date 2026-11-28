@@ -1,5 +1,6 @@
 import asyncio
 from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import replace
 from typing import Any
 
 import httpx
@@ -9,6 +10,7 @@ from redline.core import (
     Attack,
     AttackCategory,
     Case,
+    DetectionResult,
     Outcome,
     RunResult,
     TargetResponse,
@@ -208,6 +210,56 @@ async def test_broken_detector_is_an_error_and_does_not_call_the_model_again() -
 
     result = await only_result(FakeFactory(send, detectors=(Broken(),)))
     assert (result.outcome, calls) == (Outcome.ERROR, 1)
+    # The reply is evidence we already paid for: keep it so it can be judged again later.
+    assert result.response is not None
+    assert result.error == "judging failed: detector broken: ReadTimeout: judge is slow"
+    (failed,) = result.detections
+    assert (failed.detector, failed.triggered, failed.confidence) == ("broken", False, 0)
+
+
+class Fixed:
+    """A detector with a set verdict, or one that always crashes (`triggered=None`)."""
+
+    def __init__(self, name: str, triggered: bool | None) -> None:
+        self.name = name
+        self._triggered = triggered
+
+    async def detect(self, attack: Case, response: TargetResponse) -> tuple[DetectionResult, ...]:
+        if self._triggered is None:
+            raise ValueError("boom")
+        return (DetectionResult(detector=self.name, triggered=self._triggered),)
+
+
+@pytest.mark.parametrize(("seen", "expected"), [(True, Outcome.SUCCEEDED), (False, Outcome.ERROR)])
+async def test_a_crashed_detector_keeps_the_other_verdicts(seen: bool, expected: Outcome) -> None:
+    # The crash comes first, to show the detector after it still runs.
+    detectors = (Fixed("judge", None), Fixed("canary", seen))
+    result = await only_result(FakeFactory(detectors=detectors))
+
+    assert result.outcome is expected
+    assert [(d.detector, d.triggered) for d in result.detections] == [
+        ("judge", False),
+        ("canary", seen),
+    ]
+    assert result.detections[0].error == "ValueError: boom"
+    assert (result.error is None) == (expected is Outcome.SUCCEEDED)
+
+
+@pytest.mark.parametrize(("seen", "expected"), [(True, Outcome.SUCCEEDED), (False, Outcome.ERROR)])
+async def test_a_crashed_delivery_check_keeps_the_reply(seen: bool, expected: Outcome) -> None:
+    def crash(response: TargetResponse) -> bool:
+        raise ValueError("boom")
+
+    class BrokenDelivery(FakeFactory):
+        def make_trial(self, attack: Case, seed: int) -> Trial:
+            return replace(super().make_trial(attack, seed), delivered=crash)
+
+    result = await only_result(BrokenDelivery(detectors=(Fixed("canary", seen),)))
+
+    assert result.outcome is expected
+    assert result.response is not None and len(result.detections) == 1
+    assert (result.delivered, result.delivery_error) == (None, "ValueError: boom")
+    assert (result.error is None) == (expected is Outcome.SUCCEEDED)
 
 
 async def test_trial_without_detectors_is_an_error_not_resisted() -> None:

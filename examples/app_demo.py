@@ -144,6 +144,8 @@ async def attack(label: str, factory: TrialFactory, attacks: list[Attack], cases
             hits = [f"{d.detector}:{d.field}" for d in result.detections if d.triggered]
             tools = [call.name for call in result.response.tool_calls]
             detail = f"{result.response.latency_ms / 1000:5.1f}s tools={tools} hits={hits}"
+            if result.error is not None:  # a detector crashed on this reply
+                detail += f"  {result.error}"
         print(f"  {result.attack_id:22} {result.outcome:13} {detail}", flush=True)
 
     report: RunReport = await run_attacks(

@@ -8,6 +8,7 @@ from collections.abc import Awaitable, Callable, Sequence
 from datetime import UTC, datetime
 
 from redline.core import Case, DetectionResult, Outcome, RunResult, TargetResponse
+from redline.detectors import Detector
 from redline.runner.budget import Budget, BudgetExceeded
 from redline.runner.cost import AttemptEstimate, EstimatingFactory, Pricing, estimate_run
 from redline.runner.report import RunReport
@@ -32,11 +33,16 @@ class _OverBudget(Exception):
 
 
 def classify(
-    response: TargetResponse, detections: Sequence[DetectionResult], delivered: bool
+    response: TargetResponse, detections: Sequence[DetectionResult], delivered: bool | None
 ) -> Outcome:
-    """Label an attempt that got a response. The order of these checks is the rule."""
+    """Label an attempt that got a response. The order of these checks is the rule.
+
+    `delivered=None` means the delivery check crashed, so nobody knows.
+    """
     if any(d.triggered for d in detections):
         return Outcome.SUCCEEDED  # a leak is a leak, even from a cut-off reply
+    if delivered is None or any(d.error is not None for d in detections):
+        return Outcome.ERROR  # a crashed check leaves nothing to conclude from
     if response.finish_reason in _NO_ANSWER_REASONS:
         return Outcome.NO_ANSWER
     if not delivered:
@@ -156,6 +162,30 @@ def _error_text(factory: TrialFactory, error: Exception | None) -> str:
     return f"{name} (message hidden; set save_error_messages=True to see it)"
 
 
+async def _detect(
+    factory: TrialFactory,
+    detectors: Sequence[Detector],
+    attack: Case,
+    response: TargetResponse,
+) -> tuple[DetectionResult, ...]:
+    """Run every detector. One that raises gets a result carrying its error instead of a
+    verdict, and the others still run."""
+    results: list[DetectionResult] = []
+    for detector in detectors:
+        try:
+            results.extend(await detector.detect(attack, response))
+        except Exception as error:
+            results.append(
+                DetectionResult(
+                    detector=detector.name,
+                    triggered=False,
+                    confidence=0,
+                    error=_error_text(factory, error),
+                )
+            )
+    return tuple(results)
+
+
 async def _run_attempt(
     attack: Case,
     attempt: int,
@@ -175,6 +205,7 @@ async def _run_attempt(
         response: TargetResponse | None = None,
         detections: tuple[DetectionResult, ...] = (),
         delivered: bool | None = None,
+        delivery_error: str | None = None,
         error: str | None = None,
         retries: int = 0,
     ) -> RunResult:
@@ -189,6 +220,7 @@ async def _run_attempt(
             response=response,
             detections=detections,
             delivered=delivered,
+            delivery_error=delivery_error,
             error=error,
             retries=retries,
         )
@@ -231,8 +263,13 @@ async def _run_attempt(
             allow=lambda error: may_retry(factory, error),
         )
         # Outside the retries: a detector bug must not make us call the model again.
-        detections = tuple([r for d in trial.detectors for r in await d.detect(attack, response)])
-        delivered = trial.delivered(response)
+        detections = await _detect(factory, trial.detectors, attack, response)
+        delivered: bool | None = None
+        delivery_error: str | None = None
+        try:
+            delivered = trial.delivered(response)
+        except Exception as error:
+            delivery_error = _error_text(factory, error)
     except AttemptFailed as failure:
         if isinstance(failure.cause, _OverBudget):
             if not tries_sent:
@@ -251,10 +288,18 @@ async def _run_attempt(
         # other attempt in the run.
         return record(Outcome.ERROR, error=_error_text(factory, error), retries=retries)
 
+    outcome = classify(response, detections, delivered)
+    failures = [f"detector {d.detector}: {d.error}" for d in detections if d.error is not None]
+    if delivery_error is not None:
+        failures.append(f"delivery check: {delivery_error}")
     return record(
-        classify(response, detections, delivered),
+        outcome,
         response=response,
         detections=detections,
         delivered=delivered,
+        delivery_error=delivery_error,
+        # A success keeps its failures on the detection or `delivery_error`; `error` is for
+        # ERROR only.
+        error=f"judging failed: {'; '.join(failures)}" if outcome is Outcome.ERROR else None,
         retries=retries,
     )

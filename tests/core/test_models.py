@@ -212,6 +212,45 @@ def test_error_result_needs_a_message_and_no_response() -> None:
         RunResult(**run_fields(outcome=Outcome.ERROR, error="boom"))  # response still set
 
 
+CRASHED = DetectionResult(detector="judge", triggered=False, error="ValueError: boom")
+
+
+def test_failed_detection_cannot_trigger_and_is_omitted_when_there_is_no_error() -> None:
+    with pytest.raises(ValidationError, match="cannot be triggered"):
+        DetectionResult(detector="judge", triggered=True, error="boom")
+    assert "error" not in HIT.model_dump()
+
+
+def test_error_result_may_keep_a_response_when_a_detector_failed() -> None:
+    result = RunResult(
+        **run_fields(outcome=Outcome.ERROR, detections=(CRASHED,), error="detector failed")
+    )
+    assert result.response is not None
+    assert RunResult.model_validate_json(result.model_dump_json()) == result
+    with pytest.raises(ValidationError, match="need a response"):
+        RunResult(
+            **run_fields(outcome=Outcome.ERROR, response=None, detections=(CRASHED,), error="x")
+        )
+
+
+@pytest.mark.parametrize("outcome", [Outcome.RESISTED, Outcome.NO_ANSWER, Outcome.NOT_DELIVERED])
+def test_a_failed_detector_cannot_count_as_a_verdict(outcome: Outcome) -> None:
+    with pytest.raises(ValidationError, match="failed detection"):
+        RunResult(**run_fields(outcome=outcome, detections=(CRASHED,)))
+
+
+def test_delivery_error_is_never_a_verdict_unless_a_leak_was_seen() -> None:
+    crashed: dict[str, Any] = {"delivery_error": "ValueError: boom"}
+    RunResult(**run_fields(outcome=Outcome.ERROR, error="x", **crashed))
+    RunResult(**run_fields(outcome=Outcome.SUCCEEDED, detections=(HIT,), **crashed))
+    with pytest.raises(ValidationError, match="delivery check"):
+        RunResult(**run_fields(outcome=Outcome.RESISTED, **crashed))
+    with pytest.raises(ValidationError, match="needs a response"):
+        RunResult(**run_fields(outcome=Outcome.ERROR, response=None, error="x", **crashed))
+    with pytest.raises(ValidationError, match="unknown `delivered`"):
+        RunResult(**run_fields(outcome=Outcome.ERROR, error="x", delivered=True, **crashed))
+
+
 def test_skipped_result_has_no_response() -> None:
     assert RunResult(**run_fields(outcome=Outcome.SKIPPED, response=None)).response is None
     with pytest.raises(ValidationError, match="no response"):

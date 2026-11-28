@@ -270,6 +270,15 @@ class DetectionResult(RedlineModel):
     field: ResponseField | None = None
     evidence: str | None = None
     confidence: float = Field(default=1.0, ge=0, le=1)
+    # Set when the detector crashed, so it has NO verdict: `triggered=False` then means
+    # "unknown", not "safe". Left out of dumps when None, like `Attack.variant_of`.
+    error: str | None = Field(default=None, exclude_if=lambda value: value is None)
+
+    @model_validator(mode="after")
+    def _failed_detector_cannot_trigger(self) -> Self:
+        if self.error is not None and self.triggered:
+            raise ValueError("a failed detection cannot be triggered")
+        return self
 
 
 class Outcome(StrEnum):
@@ -281,12 +290,14 @@ class Outcome(StrEnum):
     NO_ANSWER = "no_answer"  # cut off ("length") or stuck in tools ("max_tool_rounds")
     NOT_DELIVERED = "not_delivered"  # the poisoned document never reached the model
     SKIPPED = "skipped"  # the attack needs tools and the target has none
-    ERROR = "error"  # HTTP error, timeout or unreadable response, after retries
+    # HTTP error, timeout or unreadable response after retries, or a detector that crashed.
+    ERROR = "error"
     NOT_RUN = "not_run"  # never sent: the run's request or cost cap was reached
 
 
 # Outcomes that never got a response from the target, so there is nothing to detect on.
-_NO_RESPONSE = frozenset({Outcome.SKIPPED, Outcome.ERROR, Outcome.NOT_RUN})
+# ERROR is not listed: it has a response when the call worked but judging it crashed.
+_NO_RESPONSE = frozenset({Outcome.SKIPPED, Outcome.NOT_RUN})
 
 
 class RunResult(RedlineModel):
@@ -297,11 +308,14 @@ class RunResult(RedlineModel):
     # Which target setup produced this, e.g. "vulnbot/qwen3:8b/tool".
     target: str = Field(min_length=1)
     outcome: Outcome
-    # None only for SKIPPED, ERROR and NOT_RUN (enforced below).
+    # None for SKIPPED, NOT_RUN and an ERROR where the call itself failed (enforced below).
     response: TargetResponse | None = None
     detections: tuple[DetectionResult, ...] = ()
-    # Did the attack's documents reach the model? None when there was no response to check.
+    # Did the attack's documents reach the model? None when there was no response to check, or
+    # the check itself crashed.
     delivered: bool | None = None
+    # Set when that check crashed. Left out of dumps when None, like `DetectionResult.error`.
+    delivery_error: str | None = Field(default=None, exclude_if=lambda value: value is None)
     # What went wrong, for ERROR only. Exception type + message, never secrets.
     error: str | None = None
     # How many times the attempt was retried after a transient failure (timeout, 429, 5xx).
@@ -321,11 +335,25 @@ class RunResult(RedlineModel):
         # The outcome is stored (it can't all be worked out from the other fields), so make sure
         # it can never contradict them. A stored "resisted" next to a triggered canary would
         # quietly lower the attack success rate.
-        if self.outcome in _NO_RESPONSE:
+        detector_failed = any(d.error is not None for d in self.detections)
+        delivery_failed = self.delivery_error is not None
+        if delivery_failed and (self.response is None or self.delivered is not None):
+            raise ValueError("delivery_error needs a response and an unknown `delivered`")
+        # An ERROR is either "no answer at all" or "an answer that couldn't be judged".
+        judging_failed = detector_failed or delivery_failed
+        failed_call = self.outcome is Outcome.ERROR and not judging_failed
+        if self.outcome in _NO_RESPONSE or failed_call:
             if self.response is not None or self.detections:
                 raise ValueError(f"{self.outcome} results must have no response or detections")
         elif self.response is None:
             raise ValueError(f"{self.outcome} results need a response")
+        # A crashed detector might have been the one to see the leak, and without the delivery
+        # check "resisted" can't be told from "never saw it". Only a leak that was seen still
+        # counts; otherwise nothing is known.
+        if judging_failed and self.outcome not in (Outcome.SUCCEEDED, Outcome.ERROR):
+            raise ValueError(
+                f"{self.outcome} results can't include a failed detection or delivery check"
+            )
         if (self.outcome is Outcome.ERROR) != (self.error is not None):
             raise ValueError("error must be set exactly when outcome is error")
         if (self.outcome is Outcome.SUCCEEDED) != self.succeeded:

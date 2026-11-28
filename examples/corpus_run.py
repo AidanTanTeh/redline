@@ -101,8 +101,9 @@ def describe_result(result: RunResult) -> str:
         hits = [f"{d.detector}:{d.field}" for d in result.detections if d.triggered]
         if hits:
             detail += f"  triggered: {', '.join(hits)}"
-    elif result.error is not None:
-        detail = result.error[:100]
+    # Not `elif`: an attempt can have a reply AND an error (a detector crashed).
+    if result.error is not None:
+        detail = f"{detail}  {result.error[:100]}".strip()
     return (
         f"{result.attack_id:34} attempt {result.attempt} (seed {result.seed})  "
         f"{result.outcome:13} {detail}"
