@@ -11,6 +11,7 @@ from redline.attacks.mutators import (
     make_variants,
 )
 from redline.attacks.protect import mask_protected, unmask_protected
+from redline.attacks.registry import BUNDLED_TRANSLATIONS_DIR, bundled_mutators
 from redline.attacks.render import render_documents, render_prompt
 from redline.attacks.translation import (
     Translation,
@@ -21,6 +22,7 @@ from redline.attacks.translation import (
 
 __all__ = [
     "BUNDLED_CORPUS_DIR",
+    "BUNDLED_TRANSLATIONS_DIR",
     "Base64Mutator",
     "Corpus",
     "CorpusError",
@@ -32,6 +34,7 @@ __all__ = [
     "TranslationFile",
     "TranslationMutator",
     "build_variant",
+    "bundled_mutators",
     "load_corpus",
     "load_translation",
     "make_variants",

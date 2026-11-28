@@ -14,6 +14,10 @@ A document task the bot passed without reading the document counts as "notd", no
 
 An attack run and a task run describe the same target only if their "target settings" match.
 "WARNING" lines point out ways an attack run could make the target look safer than it is.
+
+Runs with disguised attacks get a second table. Each row compares one disguise with the
+plain versions of the SAME attacks ("pairs": both have a verdict). "up/down/same" counts
+the pairs whose success rate rose, fell or stayed put. Small differences may be luck.
 """
 
 import hashlib
@@ -23,19 +27,20 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
-from redline.attacks import load_corpus
+from redline.attacks import bundled_mutators, load_corpus, make_variants
 from redline.benign import load_tasks
-from redline.core import Attack, BenignTask, Outcome
+from redline.core import Attack, BenignTask, Case, Outcome, RunResult
 from redline.metrics import (
     GroupStats,
     Interval,
     UtilityGroup,
+    compare_mutators,
     run_warnings,
     summarize,
     summarize_utility,
     total_usage,
 )
-from redline.runner import RunReport
+from redline.runner import RunConfig, RunReport, config_hash
 
 RUNS_DIR = Path("runs")
 
@@ -92,8 +97,43 @@ def warn_if_changed(report: RunReport, current_hash: str, what: str) -> None:
         )
 
 
-def print_asr(report: RunReport, attacks: Sequence[Attack]) -> None:
-    summary = summarize(report.results, attacks)
+def warn_if_definitions_differ(report: RunReport, cases: Sequence[Case]) -> None:
+    """Rebuild the run's config hash from today's definitions of the cases that ran."""
+    first = report.results[0]
+    if first.seed is None:
+        return
+    config = RunConfig(
+        repeats=1 + max(result.attempt for result in report.results),
+        base_seed=first.seed - first.attempt,
+    )
+    ran = {result.attack_id for result in report.results}
+    current = [case for case in cases if case.id in ran]
+    if config_hash(report.target, report.cases_hash, current, config) != report.config_hash:
+        print(
+            "WARNING: today's definitions of these cases (or translations, or mutators) don't "
+            "match what was run, so the grouping below may be wrong."
+        )
+
+
+def print_mutators(results: Sequence[RunResult], attacks: Sequence[Attack]) -> None:
+    comparisons = compare_mutators(results, attacks)
+    if not comparisons:
+        return
+    print(
+        f"\n{'disguise vs plain':16} {'tried':>5} {'pairs':>5}  {'plain':>5} {'disg.':>5}  "
+        f"{'up/down/same':>12}  " + outcome_headings("succ")
+    )
+    for c in comparisons:
+        changes = f"{c.higher}/{c.lower}/{c.same}"
+        print(
+            f"{c.mutator:16} {c.tried:>5} {c.pairs:>5}  {percent(c.plain.asr):>5} "
+            f"{percent(c.disguised.asr):>5}  {changes:>12}  {outcome_counts(c.counts)}"
+        )
+    print("(outcome counts cover every disguised attempt, paired or not)")
+
+
+def print_asr(results: Sequence[RunResult], attacks: Sequence[Attack]) -> None:
+    summary = summarize(results, attacks)
     print(
         f"\n{'group':40} {'ASR':>4}  {'95% int.':>10}  {'if undecided':>12}  {'broken':>6}  "
         + outcome_headings("succ")
@@ -183,14 +223,21 @@ def main() -> None:
         )
     corpus = load_corpus()
     task_set = load_tasks()
-    if run_ids <= {attack.id for attack in corpus.attacks}:
+    attacks = (*corpus.attacks, *make_variants(corpus.attacks, bundled_mutators()))
+    if run_ids <= {attack.id for attack in attacks}:
         warn_if_changed(report, corpus.content_hash, "attack corpus")
-        print_asr(report, corpus.attacks)
+        warn_if_definitions_differ(report, attacks)
+        plain_ids = {attack.id for attack in corpus.attacks}
+        plain = [result for result in report.results if result.attack_id in plain_ids]
+        if plain:
+            print_asr(plain, corpus.attacks)
+        print_mutators(report.results, attacks)
         external = report.target.get("target") in ("python", "http")
-        for warning in run_warnings(report.results, corpus.attacks, external_app=external):
+        for warning in run_warnings(report.results, attacks, external_app=external):
             print(f"\nWARNING: {warning}")
     elif run_ids <= {task.id for task in task_set.tasks}:
         warn_if_changed(report, task_set.content_hash, "task set")
+        warn_if_definitions_differ(report, task_set.tasks)
         print_utility(report, task_set.tasks)
     else:
         sys.exit("the result ids are neither all current attacks nor all current tasks")

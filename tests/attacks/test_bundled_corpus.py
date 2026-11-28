@@ -1,37 +1,15 @@
 import re
 from collections import Counter
-from pathlib import Path
 
-import redline.attacks
-from redline.attacks import (
-    Base64Mutator,
-    HomoglyphMutator,
-    LeetspeakMutator,
-    Mutator,
-    PayloadSplitMutator,
-    TranslationMutator,
-    load_corpus,
-    load_translation,
-    make_variants,
-    render_prompt,
-)
+from redline.attacks import bundled_mutators, load_corpus, make_variants, render_prompt
 from redline.attacks.protect import protected_pattern
 from redline.core import Attack, AttackCategory
 from redline.demo import CANARY_PREFIX, search_docs_tool, send_email_tool
 
-TRANSLATIONS = Path(redline.attacks.__file__).parent / "translations"
-
 
 def every_variant() -> tuple[Attack, ...]:
     """Every mutator that ships, applied to every corpus attack it can handle."""
-    mutators: list[Mutator] = [
-        Base64Mutator(),
-        LeetspeakMutator(),
-        HomoglyphMutator(),
-        PayloadSplitMutator(),
-        *(TranslationMutator(load_translation(p)) for p in sorted(TRANSLATIONS.glob("*.yaml"))),
-    ]
-    return make_variants(load_corpus().attacks, mutators)
+    return make_variants(load_corpus().attacks, bundled_mutators())
 
 
 def everything_sent() -> tuple[Attack, ...]:
