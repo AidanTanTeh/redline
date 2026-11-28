@@ -14,6 +14,9 @@ from redline.core import Attack
 # attack's text tells the target to fill in.
 _PLACEHOLDER = re.compile(r"https?://\S*?[?&][\w-]+=([A-Z][A-Z_]{2,})\b")
 
+# A stand-in for a protected part, see mask_protected.
+MARKER = re.compile(r"\[\[\d+\]\]")
+
 _ALWAYS_PROTECTED = (
     r"https?://[^\s<>()\[\]\"']+",  # web address, query string included
     r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+",  # email address
@@ -52,8 +55,10 @@ def mask_protected(text: str, attack: Attack) -> tuple[str, tuple[str, ...]]:
 
 
 def unmask_protected(text: str, kept: tuple[str, ...]) -> str | None:
-    """Put the parts back. None unless every marker appears exactly once."""
-    if any(text.count(f"[[{number}]]") != 1 for number in range(len(kept))):
+    """Put the parts back. None unless the markers present are exactly the expected ones,
+    once each: a model may drop a marker, repeat one, or invent one."""
+    expected = [f"[[{number}]]" for number in range(len(kept))]
+    if sorted(MARKER.findall(text)) != sorted(expected):
         return None
     for number, part in enumerate(kept):
         text = text.replace(f"[[{number}]]", part)

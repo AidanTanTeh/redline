@@ -24,6 +24,11 @@ def test_a_lost_or_repeated_marker_is_refused() -> None:
     assert unmask_protected("[[0]] [[0]] [[1]]", kept) is None
 
 
+def test_an_invented_marker_is_refused() -> None:
+    assert unmask_protected("hello [[0]]", ()) is None
+    assert unmask_protected("[[0]] and [[1]]", ("send_email",)) is None
+
+
 def test_every_corpus_prompt_survives_a_round_trip() -> None:
     for attack in load_corpus().attacks:
         masked, kept = mask_protected(attack.prompt, attack)

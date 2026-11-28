@@ -11,7 +11,7 @@ import yaml
 from pydantic import Field, ValidationError, model_validator
 
 from redline.attacks.mutators import build_variant
-from redline.attacks.protect import protected_pattern
+from redline.attacks.protect import MARKER, protected_pattern
 from redline.core import Attack, RedlineModel
 from redline.core.yaml_files import CorpusError
 
@@ -84,4 +84,6 @@ class TranslationMutator:
         lost = [text for text in found if text not in entry.prompt]
         if lost:
             raise ValueError(f"{self.name}: the translation of {attack.id!r} lost {lost}")
+        if MARKER.search(entry.prompt):
+            raise ValueError(f"{self.name}: the translation of {attack.id!r} has a leftover marker")
         return build_variant(attack, self.name, lambda _: entry.prompt)
