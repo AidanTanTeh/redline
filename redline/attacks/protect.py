@@ -38,6 +38,28 @@ def protected_pattern(attack: Attack) -> re.Pattern[str]:
     return re.compile("|".join([*literals, *_ALWAYS_PROTECTED, *placeholders]), re.IGNORECASE)
 
 
+def mask_protected(text: str, attack: Attack) -> tuple[str, tuple[str, ...]]:
+    """Swap each protected part for a marker, "[[0]]", "[[1]]"..., before handing text to a
+    model that might alter it. Returns the masked text and the parts, in order."""
+    kept: list[str] = []
+
+    def marker(match: re.Match[str]) -> str:
+        kept.append(match.group())
+        return f"[[{len(kept) - 1}]]"
+
+    masked = protected_pattern(attack).sub(marker, text)
+    return masked, tuple(kept)
+
+
+def unmask_protected(text: str, kept: tuple[str, ...]) -> str | None:
+    """Put the parts back. None unless every marker appears exactly once."""
+    if any(text.count(f"[[{number}]]") != 1 for number in range(len(kept))):
+        return None
+    for number, part in enumerate(kept):
+        text = text.replace(f"[[{number}]]", part)
+    return text
+
+
 def rewrite_unprotected(text: str, attack: Attack, rewrite: Callable[[str], str]) -> str:
     """Apply `rewrite` to everything in `text` except the protected parts."""
     pieces: list[str] = []

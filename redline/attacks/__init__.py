@@ -10,6 +10,7 @@ from redline.attacks.mutators import (
     build_variant,
     make_variants,
 )
+from redline.attacks.protect import mask_protected, unmask_protected
 from redline.attacks.render import render_documents, render_prompt
 from redline.attacks.translation import (
     Translation,
@@ -34,6 +35,8 @@ __all__ = [
     "load_corpus",
     "load_translation",
     "make_variants",
+    "mask_protected",
     "render_documents",
     "render_prompt",
+    "unmask_protected",
 ]
