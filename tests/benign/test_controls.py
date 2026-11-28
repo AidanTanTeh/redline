@@ -31,3 +31,10 @@ async def test_the_right_number_passes_and_a_wrong_one_does_not() -> None:
 
     assert await completed(task, "The answer is 12.")
     assert not await completed(task, "The answer is 13.")
+
+
+async def test_a_correct_answer_in_chinese_numerals_passes() -> None:
+    task = next(t for t in control_tasks() if t.id == "control-sum--translate-zh")
+
+    assert await completed(task, "十二。")
+    assert not await completed(task, "十三。")
