@@ -11,6 +11,11 @@ Run from the repo root:
     uv run python examples/corpus_run.py --max-requests 12 --partial --rpm 20
     uv run python examples/corpus_run.py --controls --repeats 3 # can it read each disguise?
     uv run python examples/corpus_run.py --mutators all --repeats 3
+    uv run python examples/corpus_run.py --judge --repeats 3 ii-false-returns-01
+
+--judge adds a local LLM judge to every attack (pull the model first). It is slow here: Ollama
+holds one model at a time, so it reloads between the target and the judge. Without --judge,
+attacks that only a judge can score are skipped.
 
 --mutators runs each chosen attack plain AND disguised, so the two can be compared. Without
 ids or --all it uses every attack with no documents. Names: base64, leetspeak, homoglyph,
@@ -39,12 +44,14 @@ from redline.attacks import Mutator, bundled_mutators, load_corpus, make_variant
 from redline.benign import control_mutators, control_tasks, controls_hash, load_tasks
 from redline.core import Case, Outcome, RunResult
 from redline.demo import VulnBotFactory
+from redline.detectors import JudgeConfig
 from redline.metrics import total_usage
 from redline.runner import (
     Pricing,
     RunConfig,
     RunEstimate,
     RunReport,
+    can_run,
     estimate_run,
     measured_seconds_per_attempt,
     run_attacks,
@@ -53,6 +60,7 @@ from redline.targets import OpenAICompatConfig, RateLimiter
 
 DEFAULT_ATTACK_IDS = ["di-override-01", "spl-repeat-above-01", "sid-polite-01", "ii-review-note-01"]
 RUNS_DIR = Path("runs")
+OLLAMA_URL = "http://localhost:11434"
 # Ask for --yes above this worst-case cost.
 CONFIRM_ABOVE_USD = 0.50
 PRICES = {
@@ -75,6 +83,8 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="run the readability controls (narrow them with --mutators)",
     )
+    parser.add_argument("--judge", action="store_true", help="also judge attacks with an LLM")
+    parser.add_argument("--judge-model", default=JudgeConfig().model, help="local Ollama model")
     parser.add_argument("--channel", choices=["prompt", "tool"], default="prompt")
     parser.add_argument("--repeats", type=int, default=2)
     parser.add_argument("--base-seed", type=int, default=0)
@@ -98,7 +108,12 @@ def describe_result(result: RunResult) -> str:
     detail = ""
     if result.response is not None:
         detail = f"{result.response.latency_ms / 1000:5.1f}s"
-        hits = [f"{d.detector}:{d.field}" for d in result.detections if d.triggered]
+        # The judge rules on the whole reply, so it has no field to show.
+        hits = [
+            d.detector if d.field is None else f"{d.detector}:{d.field}"
+            for d in result.detections
+            if d.triggered
+        ]
         if hits:
             detail += f"  triggered: {', '.join(hits)}"
     # Not `elif`: an attempt can have a reply AND an error (a detector crashed).
@@ -174,9 +189,24 @@ def print_usage(report: RunReport, pricing: Pricing, price_name: str) -> None:
         )
 
 
+def local_judge(model: str) -> JudgeConfig:
+    """A judge on local Ollama, recording the exact build it has. Exits if it isn't there, so
+    a run can't call the target for an hour and then find there is no judge."""
+    try:
+        # Ollama's own API (not the OpenAI-style one) lists each model with its ID.
+        response = httpx.get(f"{OLLAMA_URL}/api/tags", timeout=10)
+        digests = {m["name"]: m["digest"] for m in response.raise_for_status().json()["models"]}
+    except (httpx.HTTPError, KeyError, ValueError) as error:
+        sys.exit(f"can't list Ollama's models ({type(error).__name__}). Is Ollama running?")
+    if model not in digests:
+        sys.exit(f"judge model {model!r} is not pulled. Run: ollama pull {model}")
+    return JudgeConfig(model=model, base_url=f"{OLLAMA_URL}/v1", model_digest=digests[model])
+
+
 async def run(
     cases: list[Case],
     backend: OpenAICompatConfig,
+    judge: JudgeConfig | None,
     args: argparse.Namespace,
     config: RunConfig,
     cases_hash: str,
@@ -187,11 +217,12 @@ async def run(
     async with httpx.AsyncClient() as client:
         return await run_attacks(
             cases,
-            VulnBotFactory(backend, args.channel, client=client, limiter=limiter),
+            VulnBotFactory(backend, args.channel, client=client, limiter=limiter, judge=judge),
             config,
             cases_hash=cases_hash,
             on_result=on_result,
             pricing=PRICES[args.price_as],
+            judge_pricing=Pricing.free(),  # the judge here is always local
             allow_over_estimate=args.partial,
         )
 
@@ -250,10 +281,13 @@ def select_cases(args: argparse.Namespace) -> tuple[list[Case], str, str]:
 
 def main() -> None:
     args = parse_args()
+    if args.judge and (args.benign or args.controls):
+        sys.exit("--judge rules on attacks only: benign tasks are not judged during a run")
     cases, noun, cases_hash = select_cases(args)
+    judge = local_judge(args.judge_model) if args.judge else None
 
     backend = OpenAICompatConfig(
-        base_url="http://localhost:11434/v1",
+        base_url=f"{OLLAMA_URL}/v1",
         model="qwen3:8b",
         temperature=args.temperature,
         timeout_s=180,
@@ -269,7 +303,7 @@ def main() -> None:
     total = len(cases) * config.repeats
 
     pricing = PRICES[args.price_as]
-    factory = VulnBotFactory(backend, args.channel)
+    factory = VulnBotFactory(backend, args.channel, judge=judge)
     estimate = estimate_run(
         cases,
         factory,
@@ -277,8 +311,12 @@ def main() -> None:
         pricing,
         seconds_per_attempt=previous_speed(factory, cases_hash),
         requests_per_minute=args.rpm,
+        judge_pricing=Pricing.free(),
     )
     print_estimate(estimate, args.price_as)
+    skipped = [case.id for case in cases if not can_run(factory, case)]
+    if skipped:
+        print(f"will be skipped (this setup can't test them): {', '.join(skipped)}")
     if args.dry_run:
         return
     # run_attacks enforces the caps too. Checking here avoids leaving empty result files.
@@ -298,6 +336,8 @@ def main() -> None:
         f"{len(cases)} {noun}s x {config.repeats} = {total} attempts, {args.channel} channel, "
         f"{backend.model} (thinking off, temperature {backend.temperature}). Local: $0."
     )
+    if judge is not None:
+        print(f"judge: {judge.model}, build {str(judge.model_digest)[:12]}")
 
     done = 0
     with results_path.open("w", encoding="utf-8") as out:
@@ -309,7 +349,7 @@ def main() -> None:
             out.flush()
             print(f"[{done}/{total}] {describe_result(result)}", flush=True)
 
-        report = asyncio.run(run(cases, backend, args, config, cases_hash, save))
+        report = asyncio.run(run(cases, backend, judge, args, config, cases_hash, save))
 
     # The whole report (settings, hashes, times, results) goes in a second file.
     report_path = RUNS_DIR / f"{stem}.report.json"
