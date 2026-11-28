@@ -7,7 +7,7 @@ import asyncio
 from collections.abc import Awaitable, Callable, Sequence
 from datetime import UTC, datetime
 
-from redline.core import Case, DetectionResult, Outcome, RunResult, TargetResponse
+from redline.core import Case, DetectionResult, Outcome, RunResult, TargetResponse, Usage
 from redline.detectors import Detector
 from redline.runner.budget import Budget, BudgetExceeded
 from redline.runner.cost import AttemptEstimate, EstimatingFactory, Pricing, estimate_run
@@ -60,6 +60,7 @@ async def run_attacks(
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     pricing: Pricing | None = None,
     allow_over_estimate: bool = False,
+    judge_pricing: Pricing | None = None,
 ) -> RunReport:
     """Run every attack `config.repeats` times and return all the results.
 
@@ -70,7 +71,8 @@ async def run_attacks(
     With `config.max_requests` or `config.max_cost_usd` set (a cost cap also needs `pricing`):
     the run is refused with BudgetExceeded if its worst case is over a cap, unless
     `allow_over_estimate` is True. Then it runs until the next try might not fit, and every
-    attempt after that is recorded as NOT_RUN.
+    attempt after that is recorded as NOT_RUN. A judge's calls count towards both caps; with
+    a cost cap its price (`judge_pricing`) must be given too.
     """
     ids = [attack.id for attack in attacks]
     if len(set(ids)) != len(ids):
@@ -79,7 +81,9 @@ async def run_attacks(
     factory.preflight()
     description = dict(factory.describe())
     run_hash = config_hash(description, cases_hash, attacks, config)
-    budget, worst_cases = _make_budget(attacks, factory, config, pricing, allow_over_estimate)
+    budget, worst_cases = _make_budget(
+        attacks, factory, config, pricing, judge_pricing, allow_over_estimate
+    )
     started_at = datetime.now(UTC)
     # At most this many attempts are in flight at once.
     slots = asyncio.Semaphore(config.max_concurrency)
@@ -119,6 +123,7 @@ def _make_budget(
     factory: TrialFactory,
     config: RunConfig,
     pricing: Pricing | None,
+    judge_pricing: Pricing | None,
     allow_over_estimate: bool,
 ) -> tuple[Budget | None, dict[str, AttemptEstimate]]:
     """The run's budget and each case's worst case, or (None, {}) when nothing is capped."""
@@ -129,8 +134,18 @@ def _make_budget(
     if not isinstance(factory, EstimatingFactory):
         raise TypeError("a capped run needs a factory with estimate_attempt()")
     prices = pricing or Pricing.free()  # only a request cap: money doesn't matter
+    worst_cases = {
+        case.id: factory.estimate_attempt(case) for case in attacks if can_run(factory, case)
+    }
+    judged = any(w.judge is not None for w in worst_cases.values())
+    if judged and judge_pricing is None:
+        if config.max_cost_usd is not None:
+            raise ValueError(
+                "a cost cap with a judge needs judge_pricing (Pricing.free() for a local one)"
+            )
+        judge_pricing = Pricing.free()
     if not allow_over_estimate:
-        estimate = estimate_run(attacks, factory, config, prices)
+        estimate = estimate_run(attacks, factory, config, prices, judge_pricing=judge_pricing)
         over = []
         if config.max_requests is not None and estimate.requests > config.max_requests:
             over.append(f"{estimate.requests} requests (cap {config.max_requests})")
@@ -141,15 +156,17 @@ def _make_budget(
                 f"worst case is {' and '.join(over)}. Run fewer cases or repeats, raise the "
                 "cap, or pass allow_over_estimate=True to run until the cap is reached."
             )
-    worst_cases = {
-        case.id: factory.estimate_attempt(case) for case in attacks if can_run(factory, case)
-    }
     if config.max_cost_usd is not None and not all(w.tokens_known for w in worst_cases.values()):
         raise ValueError(
             "this target's token use is unknown, so a cost cap can't be enforced. "
             "Use max_requests instead."
         )
-    budget = Budget(prices, max_requests=config.max_requests, max_cost_usd=config.max_cost_usd)
+    budget = Budget(
+        prices,
+        judge_pricing=judge_pricing,
+        max_requests=config.max_requests,
+        max_cost_usd=config.max_cost_usd,
+    )
     return budget, worst_cases
 
 
@@ -184,6 +201,15 @@ async def _detect(
                 )
             )
     return tuple(results)
+
+
+def _verdict_usage(detections: Sequence[DetectionResult]) -> Usage | None:
+    """What the model-calling detectors used, or None if none of them reported it."""
+    total: Usage | None = None
+    for detection in detections:
+        if detection.usage is not None:
+            total = detection.usage if total is None else total + detection.usage
+    return total
 
 
 async def _run_attempt(
@@ -231,6 +257,10 @@ async def _run_attempt(
     retries = 0
     tries_sent = 0
     last_error: Exception | None = None
+    # The judge rules once per attempt, so its call is reserved with the first try only, and
+    # handed back if no reply ever arrives.
+    judge_worst = None if worst is None else worst.judge
+    judge_reserved = False
     try:
         trial = factory.make_trial(attack, seed)
         if not trial.detectors:
@@ -238,10 +268,13 @@ async def _run_attempt(
             raise ValueError("trial has no detectors")
 
         async def send() -> TargetResponse:
-            nonlocal tries_sent, last_error
+            nonlocal tries_sent, last_error, judge_reserved
             # Every try is paid for separately, so each retry has to fit in the budget too.
-            if budget is not None and worst is not None and not budget.reserve(worst):
-                raise _OverBudget
+            if budget is not None and worst is not None:
+                wanted = worst if not tries_sent else worst.model_copy(update={"judge": None})
+                if not budget.reserve(wanted):
+                    raise _OverBudget
+                judge_reserved = judge_reserved or wanted.judge is not None
             tries_sent += 1
             response = None
             try:
@@ -264,6 +297,9 @@ async def _run_attempt(
         )
         # Outside the retries: a detector bug must not make us call the model again.
         detections = await _detect(factory, trial.detectors, attack, response)
+        if budget is not None and judge_worst is not None and judge_reserved:
+            budget.settle_judge(judge_worst, _verdict_usage(detections))
+            judge_reserved = False
         delivered: bool | None = None
         delivery_error: str | None = None
         try:
@@ -287,6 +323,9 @@ async def _run_attempt(
         # Caught here on purpose: an escaped exception would make the TaskGroup cancel every
         # other attempt in the run.
         return record(Outcome.ERROR, error=_error_text(factory, error), retries=retries)
+    finally:
+        if budget is not None and judge_worst is not None and judge_reserved:
+            budget.release_judge(judge_worst)
 
     outcome = classify(response, detections, delivered)
     failures = [f"detector {d.detector}: {d.error}" for d in detections if d.error is not None]

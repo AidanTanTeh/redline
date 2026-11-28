@@ -22,7 +22,7 @@ from redline.detectors import (
     seeded_canary,
     unknown_to_attacker,
 )
-from redline.runner.cost import AttemptEstimate
+from redline.runner.cost import AttemptEstimate, judge_estimate
 from redline.runner.retry import is_rate_limit, never_sent
 from redline.runner.trial import Trial
 from redline.targets import (
@@ -103,13 +103,19 @@ class _AppFactory:
 
     def estimate_attempt(self, case: Case) -> AttemptEstimate:
         """Only a request count: Redline can't see how many tokens your app uses."""
-        if self._judge is not None:
-            # Estimating without the judge's calls would let a capped run overspend.
-            raise ValueError("estimating or capping a run with a judge isn't supported yet")
         if self._max_calls is None:
             raise ValueError("set max_calls_per_attempt to estimate or cap a run")
         return AttemptEstimate(
-            requests=self._max_calls, input_tokens=0, output_tokens=0, tokens_known=False
+            requests=self._max_calls,
+            input_tokens=0,
+            output_tokens=0,
+            tokens_known=False,
+            # Same rule as `_detectors`: the judge rules on attacks only.
+            judge=(
+                judge_estimate(self._judge)
+                if self._judge is not None and isinstance(case, Attack)
+                else None
+            ),
         )
 
     def _detectors(self, case: Case, canary: str) -> tuple[Detector, ...]:

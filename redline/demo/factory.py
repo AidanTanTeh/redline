@@ -24,7 +24,7 @@ from redline.detectors import (
     seeded_canary,
     unknown_to_attacker,
 )
-from redline.runner import AttemptEstimate, Trial, estimate_tokens
+from redline.runner import AttemptEstimate, Trial, estimate_tokens, judge_estimate
 from redline.targets import OpenAICompatConfig, RateLimiter
 
 # Input tokens per request that we can't see: role markers and the server's tool instructions.
@@ -187,9 +187,6 @@ class VulnBotFactory:
         Assumes each tool is called at most once per round. A model asking for the same tool
         several times in one reply would add more input than this counts.
         """
-        if self._judge is not None:
-            # Estimating without the judge's calls would let a capped run overspend.
-            raise ValueError("estimating or capping a run with a judge isn't supported yet")
         max_output = self._output_token_cap()
         canary = seeded_canary(0, case.id)  # every canary is the same length
         _, message = make_vulnbot(case, self._backend, self._channel, canary=canary)
@@ -207,6 +204,12 @@ class VulnBotFactory:
             # The whole history is re-sent each call: first, first + growth, first + 2*growth...
             input_tokens=calls * first + growth * calls * (calls - 1) // 2,
             output_tokens=calls * max_output,
+            # Same rule as `_detectors`: the judge rules on attacks only.
+            judge=(
+                judge_estimate(self._judge)
+                if self._judge is not None and isinstance(case, Attack)
+                else None
+            ),
         )
 
     def make_trial(self, attack: Case, seed: int) -> Trial:

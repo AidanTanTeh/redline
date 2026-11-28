@@ -9,6 +9,7 @@ from redline.runner.cost import (
     RunEstimate,
     estimate_run,
     estimate_tokens,
+    judge_estimate,
     measured_seconds_per_attempt,
 )
 from redline.runner.http_config import ConfigError, HttpAppConfig, load_http_factory
@@ -51,6 +52,7 @@ __all__ = [
     "estimate_run",
     "estimate_tokens",
     "is_rate_limit",
+    "judge_estimate",
     "load_http_factory",
     "may_retry",
     "measured_seconds_per_attempt",

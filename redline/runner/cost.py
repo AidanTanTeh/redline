@@ -12,6 +12,7 @@ from typing import Protocol, Self, runtime_checkable
 from pydantic import Field
 
 from redline.core import Case, RedlineModel
+from redline.detectors import JudgeConfig
 from redline.runner.report import RunReport
 from redline.runner.trial import RunConfig, TrialFactory, can_run
 
@@ -49,6 +50,19 @@ class AttemptEstimate(RedlineModel):
     # False when only the number of requests is known. The token figures are then meaningless
     # zeros, and a cost cap must be refused.
     tokens_known: bool = True
+    # The LLM judge's calls, if one rules on this case. Kept apart from the fields above (which
+    # are the target's) because the judge has its own price and is not retried.
+    judge: "AttemptEstimate | None" = None
+
+
+def judge_estimate(judge: JudgeConfig) -> AttemptEstimate:
+    """Worst case for one verdict: a single call that fills the judge's context window."""
+    return AttemptEstimate(
+        requests=1,
+        # The judge refuses to send anything that might not fit, so this is a true ceiling.
+        input_tokens=judge.context_tokens - judge.max_output_tokens,
+        output_tokens=judge.max_output_tokens,
+    )
 
 
 @runtime_checkable  # so the runner can ask `isinstance` before enforcing a cap
@@ -65,9 +79,15 @@ class RunEstimate(RedlineModel):
 
     # Attempts that will actually be sent (skipped ones cost nothing).
     attempts: int = Field(ge=0)
+    # Every model call, the judge's included. A request cap is compared with this.
     requests: int = Field(ge=0)
+    # The target's tokens; the judge's are listed separately below.
     input_tokens: int = Field(ge=0)
     output_tokens: int = Field(ge=0)
+    judge_requests: int = Field(default=0, ge=0)
+    judge_input_tokens: int = Field(default=0, ge=0)
+    judge_output_tokens: int = Field(default=0, ge=0)
+    # Target and judge together.
     cost_usd: float = Field(ge=0)
     # False: don't show the token or cost figures, they are not known.
     tokens_known: bool = True
@@ -84,13 +104,17 @@ def estimate_run(
     seconds_per_attempt: float | None = None,
     parallel_requests: int = 1,
     requests_per_minute: float | None = None,
+    judge_pricing: Pricing | None = None,
 ) -> RunEstimate:
     """Add up the worst case for every attempt `run_attacks` would send with these settings.
 
     `parallel_requests` is how many requests the SERVER really works on at once. It defaults to
     1 because a server that queues (local Ollama) gets no faster from `max_concurrency`; it
     never counts for more than `max_concurrency`. With a rate limit, the time is at least what
-    the worst-case number of requests needs to get through it.
+    the worst-case number of requests needs to get through it (the target's requests only: a
+    judge has its own limit).
+
+    `judge_pricing` is required when a judge is involved: it is never assumed to be free.
     """
     if parallel_requests < 1:
         raise ValueError("parallel_requests must be at least 1")
@@ -102,6 +126,13 @@ def estimate_run(
     requests = sum(e.requests for e in per_case) * config.repeats
     input_tokens = sum(e.input_tokens for e in per_case) * config.repeats
     output_tokens = sum(e.output_tokens for e in per_case) * config.repeats
+    judged = [e.judge for e in per_case if e.judge is not None]
+    if judged and judge_pricing is None:
+        raise ValueError("pass judge_pricing (Pricing.free() for a local judge)")
+    judge_requests = sum(e.requests for e in judged) * config.repeats
+    judge_input = sum(e.input_tokens for e in judged) * config.repeats
+    judge_output = sum(e.output_tokens for e in judged) * config.repeats
+    judge_cost = 0.0 if judge_pricing is None else judge_pricing.cost_usd(judge_input, judge_output)
     seconds = None
     if seconds_per_attempt is not None:
         seconds = attempts * seconds_per_attempt / min(parallel_requests, config.max_concurrency)
@@ -109,18 +140,23 @@ def estimate_run(
             seconds = max(seconds, requests * 60 / requests_per_minute)
     return RunEstimate(
         attempts=attempts,
-        requests=requests,
+        requests=requests + judge_requests,
         input_tokens=input_tokens,
         output_tokens=output_tokens,
-        cost_usd=pricing.cost_usd(input_tokens, output_tokens),
+        judge_requests=judge_requests,
+        judge_input_tokens=judge_input,
+        judge_output_tokens=judge_output,
+        cost_usd=pricing.cost_usd(input_tokens, output_tokens) + judge_cost,
         tokens_known=all(e.tokens_known for e in per_case),
         seconds=seconds,
     )
 
 
 def measured_seconds_per_attempt(report: RunReport, factory: TrialFactory) -> float | None:
-    """Average model time per attempt in an earlier run of the same target setup.
+    """Average time per attempt in an earlier run of the same target setup.
 
+    The target's reply time, except for a judged run: judge time isn't recorded per call, so
+    its whole duration is divided by the answered attempts.
     None if that run used different settings (its speed would mislead) or got no responses.
     """
 
@@ -131,4 +167,8 @@ def measured_seconds_per_attempt(report: RunReport, factory: TrialFactory) -> fl
     if canonical(report.target) != canonical(dict(factory.describe())):
         return None
     times = [r.response.latency_ms / 1000 for r in report.results if r.response is not None]
-    return sum(times) / len(times) if times else None
+    if not times:
+        return None
+    if "judge" in report.target:
+        return (report.finished_at - report.started_at).total_seconds() / len(times)
+    return sum(times) / len(times)

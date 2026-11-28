@@ -1,6 +1,7 @@
 """The judge inside real factories, against a fake server."""
 
 import json
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
@@ -8,15 +9,23 @@ import httpx
 import pytest
 
 from redline.benign import load_tasks
-from redline.core import Attack, AttackCategory, Outcome
+from redline.core import Attack, AttackCategory, Outcome, Usage
 from redline.demo import VulnBotFactory
 from redline.detectors import JudgeConfig
 from redline.runner import (
+    AttemptEstimate,
+    Budget,
+    BudgetExceeded,
+    EstimatingFactory,
     FunctionFactory,
     HttpFactory,
+    Pricing,
     RunConfig,
     TrialFactory,
+    estimate_run,
+    judge_estimate,
     load_http_factory,
+    measured_seconds_per_attempt,
     run_attacks,
 )
 from redline.targets import HttpTemplateConfig, OpenAICompatConfig, TrialContext
@@ -115,10 +124,110 @@ def test_description_mentions_the_judge_only_when_there_is_one() -> None:
         assert factory.describe()["judge"] == JUDGE.describe()
 
 
-async def test_a_capped_run_with_a_judge_is_refused_for_now() -> None:
-    for factory in factories(JUDGE):
-        with pytest.raises(ValueError, match="with a judge isn't supported yet"):
-            await run_attacks([LEAK], factory, RunConfig(max_requests=100), cases_hash="c")
+def two(attack: Attack) -> list[Attack]:
+    return [attack, attack.model_copy(update={"id": "second"})]
+
+
+def test_estimates_add_one_judge_call_for_attacks_only() -> None:
+    factory = VulnBotFactory(BACKEND, "prompt", judge=JUDGE)
+    judge = factory.estimate_attempt(LEAK).judge
+    assert judge is not None
+    assert (judge.requests, judge.input_tokens, judge.output_tokens) == (1, 3896, 200)
+    assert factory.estimate_attempt(load_tasks().tasks[0]).judge is None
+    for each in factories(JUDGE):
+        assert isinstance(each, EstimatingFactory)
+        estimate = estimate_run(
+            two(LEAK), each, RunConfig(), Pricing.free(), judge_pricing=Pricing.free()
+        )
+        assert estimate.judge_requests == 2
+        assert estimate.requests == 2 * (each.estimate_attempt(LEAK).requests + 1)
+
+
+def test_estimating_a_judged_run_needs_the_judges_price() -> None:
+    factory = VulnBotFactory(BACKEND, "prompt", judge=JUDGE)
+    with pytest.raises(ValueError, match="judge_pricing"):
+        estimate_run([LEAK], factory, RunConfig(), Pricing.free())
+
+
+def capped_app(client: httpx.AsyncClient, function: Any = refuse) -> FunctionFactory:
+    return FunctionFactory(
+        function, version="v1", max_calls_per_attempt=1, judge=JUDGE, judge_client=client
+    )
+
+
+async def test_a_request_cap_counts_the_judges_calls() -> None:
+    client, judged = server()
+    config = RunConfig(max_requests=3)
+    with pytest.raises(BudgetExceeded, match="4 requests"):
+        await run_attacks(two(LEAK), capped_app(client), config, cases_hash="c")
+
+    report = await run_attacks(
+        two(LEAK), capped_app(client), config, cases_hash="c", allow_over_estimate=True
+    )
+
+    assert [r.outcome for r in report.results] == [Outcome.SUCCEEDED, Outcome.NOT_RUN]
+    assert len(judged) == 1
+
+
+async def test_the_judges_call_is_handed_back_when_there_is_no_reply() -> None:
+    def crash_first(prompt: str, context: TrialContext) -> str:
+        if context.seed == 0:
+            raise RuntimeError("boom")
+        return "no"
+
+    client, judged = server()
+    # The failed attempt uses 1 call. The second needs 2, so 3 is enough only if the unused
+    # judge call came back.
+    report = await run_attacks(
+        [LEAK],
+        capped_app(client, crash_first),
+        RunConfig(repeats=2, max_requests=3),
+        cases_hash="c",
+        allow_over_estimate=True,
+    )
+
+    assert [r.outcome for r in report.results] == [Outcome.ERROR, Outcome.SUCCEEDED]
+    assert len(judged) == 1
+
+
+def test_a_verdicts_real_usage_replaces_its_worst_case() -> None:
+    free, paid = Pricing.free(), Pricing(input_per_mtok=1, output_per_mtok=2)
+    budget = Budget(free, judge_pricing=paid, max_cost_usd=1)
+    judge = judge_estimate(JUDGE)
+    worst = AttemptEstimate(requests=1, input_tokens=10, output_tokens=10, judge=judge)
+    assert budget.reserve(worst)
+
+    budget.settle(worst, Usage(requests=1, input_tokens=10, output_tokens=10))
+    budget.settle_judge(judge, Usage(requests=1, input_tokens=500, output_tokens=40))
+
+    assert budget.requests == 2
+    assert budget.cost_usd == pytest.approx((500 * 1 + 40 * 2) / 1_000_000)
+
+
+async def test_a_judged_runs_speed_includes_the_judges_time() -> None:
+    client, _ = server()
+    factory = capped_app(client)
+    report = await run_attacks(two(LEAK), factory, RunConfig(), cases_hash="c")
+    later = report.started_at + timedelta(seconds=60)
+    slow = report.model_copy(update={"finished_at": later})
+
+    assert measured_seconds_per_attempt(slow, factory) == 30
+
+
+async def test_a_cost_cap_needs_the_judges_price_and_counts_it() -> None:
+    client, judged = server()
+    factory = VulnBotFactory(BACKEND, "prompt", client=client, judge=JUDGE)
+    config = RunConfig(max_cost_usd=0.001)
+    with pytest.raises(ValueError, match="needs judge_pricing"):
+        await run_attacks([LEAK], factory, config, cases_hash="c", pricing=Pricing.free())
+
+    # A free target and a paid judge: the judge alone breaks the cap.
+    paid = Pricing(input_per_mtok=1, output_per_mtok=1)
+    with pytest.raises(BudgetExceeded, match=r"\$0\.0041"):
+        await run_attacks(
+            [LEAK], factory, config, cases_hash="c", pricing=Pricing.free(), judge_pricing=paid
+        )
+    assert judged == []
 
 
 def test_judge_system_prompt_without_a_judge_is_a_mistake() -> None:
