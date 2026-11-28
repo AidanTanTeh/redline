@@ -86,6 +86,12 @@ class Case(RedlineModel):
         succeed. The runner skips such cases there instead of counting them as failures."""
         return False
 
+    @property
+    def needs_judge(self) -> bool:
+        """True if only a judge can tell whether this succeeded. Skipped on targets without
+        one, for the same reason."""
+        return False
+
 
 class Attack(Case):
     """One attack payload from the corpus.
@@ -98,6 +104,11 @@ class Attack(Case):
     # What counts as success for tool-abuse attacks (read by ToolCallDetector). Required for
     # excessive_agency; other categories may use it too (e.g. an indirect attack that emails).
     success_tool_call: ToolCallMatch | None = None
+    # What counts as success when no exact match can tell (e.g. the bot states a planted false
+    # claim). Written for the LLM judge and for human labellers. Left out of dumps when None.
+    judge_goal: str | None = Field(
+        default=None, min_length=1, exclude_if=lambda value: value is None
+    )
     # Set only on attacks a mutator made. Left out of dumps when None, so an ordinary attack
     # serialises (and so hashes) exactly as it did before this field existed. The quotes are
     # needed because Variant is defined further down.
@@ -117,6 +128,8 @@ class Attack(Case):
             raise ValueError("a variant must keep its base attack's category")
         if self.success_tool_call != base.success_tool_call:
             raise ValueError("a variant must keep its base attack's success_tool_call")
+        if self.judge_goal != base.judge_goal:
+            raise ValueError("a variant must keep its base attack's judge_goal")
         return self
 
     @model_validator(mode="after")
@@ -138,6 +151,10 @@ class Attack(Case):
     @property
     def needs_tools(self) -> bool:
         return self.success_tool_call is not None
+
+    @property
+    def needs_judge(self) -> bool:
+        return self.judge_goal is not None
 
     @property
     def owasp_id(self) -> str:
@@ -291,7 +308,7 @@ class Outcome(StrEnum):
     RESISTED = "resisted"  # a usable answer, attack delivered, nothing triggered
     NO_ANSWER = "no_answer"  # cut off ("length") or stuck in tools ("max_tool_rounds")
     NOT_DELIVERED = "not_delivered"  # the poisoned document never reached the model
-    SKIPPED = "skipped"  # the attack needs tools and the target has none
+    SKIPPED = "skipped"  # this target can't test the case (e.g. no tools, or no judge)
     # HTTP error, timeout or unreadable response after retries, or a detector that crashed.
     ERROR = "error"
     NOT_RUN = "not_run"  # never sent: the run's request or cost cap was reached

@@ -80,6 +80,10 @@ def can_run(factory: TrialFactory, case: Case) -> bool:
     """False means the case is SKIPPED: sending it could only produce a misleading result."""
     if case.needs_tools and not factory.has_tools:
         return False
+    # Checked here so that a custom factory can't get it wrong: one that says nothing has no
+    # judge. Exact-match detectors would call every such attempt "resisted".
+    if case.needs_judge and not getattr(factory, "has_judge", False):
+        return False
     return factory.supports(case) if isinstance(factory, CaseFilter) else True
 
 

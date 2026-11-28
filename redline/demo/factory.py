@@ -86,6 +86,10 @@ class VulnBotFactory:
     def has_tools(self) -> bool:
         return True  # both channels can at least send email
 
+    @property
+    def has_judge(self) -> bool:
+        return self._judge is not None
+
     def describe(self) -> dict[str, Any]:
         tools = channel_tools(self._channel, _PROBE.documents)
         # Present only with a judge: even `"judge": None` would change every earlier hash.

@@ -91,6 +91,7 @@ def build_variant(base: Attack, mutator: str, rewrite: Callable[[str], str]) -> 
         description=base.description,
         tags=base.tags,
         success_tool_call=base.success_tool_call,
+        judge_goal=base.judge_goal,
         variant_of=Variant(mutator=mutator, base=base),
     )
 

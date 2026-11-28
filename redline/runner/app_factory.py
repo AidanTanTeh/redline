@@ -91,6 +91,10 @@ class _AppFactory:
     def has_tools(self) -> bool:
         return bool(self._tool_names)
 
+    @property
+    def has_judge(self) -> bool:
+        return self._judge is not None
+
     def supports(self, case: Case) -> bool:
         """False for a case that needs a tool this app doesn't have: it could never succeed."""
         if isinstance(case, Attack):
