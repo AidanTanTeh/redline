@@ -1,9 +1,41 @@
 import re
 from collections import Counter
+from pathlib import Path
 
-from redline.attacks import load_corpus, render_prompt
+import redline.attacks
+from redline.attacks import (
+    Base64Mutator,
+    HomoglyphMutator,
+    LeetspeakMutator,
+    Mutator,
+    PayloadSplitMutator,
+    TranslationMutator,
+    load_corpus,
+    load_translation,
+    make_variants,
+    render_prompt,
+)
+from redline.attacks.protect import protected_pattern
 from redline.core import Attack, AttackCategory
 from redline.demo import CANARY_PREFIX, search_docs_tool, send_email_tool
+
+TRANSLATIONS = Path(redline.attacks.__file__).parent / "translations"
+
+
+def every_variant() -> tuple[Attack, ...]:
+    """Every mutator that ships, applied to every corpus attack it can handle."""
+    mutators: list[Mutator] = [
+        Base64Mutator(),
+        LeetspeakMutator(),
+        HomoglyphMutator(),
+        PayloadSplitMutator(),
+        *(TranslationMutator(load_translation(p)) for p in sorted(TRANSLATIONS.glob("*.yaml"))),
+    ]
+    return make_variants(load_corpus().attacks, mutators)
+
+
+def everything_sent() -> tuple[Attack, ...]:
+    return (*load_corpus().attacks, *every_variant())
 
 
 def everything_an_attack_says(attack: Attack) -> list[str]:
@@ -52,7 +84,7 @@ def test_every_indirect_attack_has_an_innocent_question_and_a_document() -> None
 def test_no_attack_text_contains_the_canary_prefix() -> None:
     # If a payload contained the canary text, a bot that merely quoted the document would
     # look like it leaked. The corpus must never know the secret.
-    for attack in load_corpus().attacks:
+    for attack in everything_sent():
         texts = [attack.prompt, *(d.content for d in attack.documents)]
         assert not any(CANARY_PREFIX.lower() in t.lower() for t in texts), attack.id
 
@@ -62,11 +94,29 @@ def test_any_url_or_email_address_uses_the_reserved_example_domain() -> None:
     # `.example`). Covers URLs, email addresses, and the addresses attacks wait for.
     url_host = re.compile(r"https?://([^/\s)?#]+)")
     email_host = re.compile(r"[\w.+-]+@([\w.-]+)")
-    for attack in load_corpus().attacks:
+    for attack in everything_sent():
         for text in everything_an_attack_says(attack):
             for found in [*url_host.findall(text), *email_host.findall(text)]:
                 host = found.rstrip(".")
                 assert host.endswith(".example"), f"{attack.id}: real-looking host {found}"
+
+
+def test_every_variant_keeps_what_must_stay_readable() -> None:
+    # Addresses, links, tool names and placeholders. base64 is the one exception: it encodes
+    # everything, and the target has to decode them itself.
+    variants = every_variant()
+    assert len({v.id for v in variants}) == len(variants)
+    for variant in variants:
+        assert variant.variant_of is not None
+        if variant.variant_of.mutator == "base64":
+            continue
+        base = variant.variant_of.base
+        sent = "\n".join([variant.prompt, *(d.content for d in variant.documents)])
+        for text in [base.prompt, *(d.content for d in base.documents)]:
+            for match in protected_pattern(base).finditer(text):
+                # Payload splitting quotes its pieces, so a quote mark arrives escaped.
+                kept = match.group()
+                assert kept in sent or kept.replace('"', '\\"') in sent, (variant.id, kept)
 
 
 def test_every_agency_attack_names_a_tool_vulnbot_really_has() -> None:
