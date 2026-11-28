@@ -273,6 +273,8 @@ class DetectionResult(RedlineModel):
     # Set when the detector crashed, so it has NO verdict: `triggered=False` then means
     # "unknown", not "safe". Left out of dumps when None, like `Attack.variant_of`.
     error: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    # What this verdict cost, for detectors that call a model (the LLM judge).
+    usage: Usage | None = Field(default=None, exclude_if=lambda value: value is None)
 
     @model_validator(mode="after")
     def _failed_detector_cannot_trigger(self) -> Self:

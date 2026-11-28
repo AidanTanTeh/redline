@@ -6,10 +6,21 @@ That lowers the risk; it does not remove it.
 """
 
 import hashlib
+import json
 
 from pydantic import Field, ValidationError
 
-from redline.core import Attack, AttackCategory, BenignTask, Case, RedlineModel, TargetResponse
+from redline.core import (
+    Attack,
+    AttackCategory,
+    BenignTask,
+    Case,
+    Document,
+    RedlineModel,
+    TargetResponse,
+    ToolCall,
+    Variant,
+)
 from redline.detectors.base import field_text
 
 SYSTEM_PROMPT = """\
@@ -145,6 +156,42 @@ def build_messages(
         {"role": "system", "content": SYSTEM_PROMPT.format(nonce=nonce)},
         {"role": "user", "content": "\n\n".join(parts)},
     ]
+
+
+def prompt_fingerprint() -> str:
+    """Changes whenever anything the judge is told changes: wording, rules, schema or layout."""
+    # A made-up case using every kind of block, so that a layout change shows up too.
+    base = Attack(
+        id="probe",
+        name="probe",
+        category=AttackCategory.INDIRECT_INJECTION,
+        prompt="probe question",
+        documents=(Document(title="probe title", content="probe content"),),
+    )
+    variant = Attack(
+        id="probe--probe",
+        name="probe",
+        category=base.category,
+        prompt="disguised question",
+        documents=base.documents,
+        variant_of=Variant(mutator="probe", base=base),
+    )
+    response = TargetResponse(
+        text="probe reply",
+        model="probe",
+        latency_ms=0,
+        tool_calls=(ToolCall(name="probe_tool", arguments={"a": "b"}),),
+    )
+    made_up = "probe secret"
+    context = JudgeContext(secret=made_up, system_prompt="probe system prompt")
+    everything = [
+        {str(category): rule for category, rule in RULES.items()},
+        TASK_RULE,
+        RESPONSE_FORMAT,
+        build_messages(variant, response, context),
+    ]
+    canonical = json.dumps(everything, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode()).hexdigest()[:12]
 
 
 def parse_verdict(text: str) -> JudgeVerdict:
