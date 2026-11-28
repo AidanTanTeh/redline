@@ -332,3 +332,29 @@ so not a rate. Both apps were my own demo bot; no real app has been tested yet (
 forgotten canary can only be warned about, a secret under a harmless name can't be detected,
 encoded copies of a key aren't redacted, a timed-out normal function keeps running, and
 streaming, logins and multi-turn chat aren't supported.
+
+## 4.1: Mutators
+
+I added five disguises (base64, leetspeak, look-alike letters, payload splitting, Chinese) to
+test whether hiding an attack helps it succeed. Each variant is an ordinary attack that
+remembers its original, so the runner didn't change, old config hashes still reproduce, and
+each disguise is compared with the same attacks undisguised. Emails, links and tool names are
+never disguised (base64 excepted, which encodes everything), because a changed address would
+make a successful attack look resisted. Translations are generated once and saved, so every
+run sends the same text. I left multi-turn attacks for later because every target would need
+a new interface.
+
+Several things went wrong. Leetspeak changed a link placeholder in the sentence but not in the
+link, which broke that attack while tests passed. qwen3 couldn't write Zulu at all: it produced
+gibberish. In Chinese it sometimes obeyed the attack instead of translating it, and copied an
+example marker from my instructions. I added checks, removed bad entries and compared the
+remaining 16 with Google Translate. The prompt-leak detector also had to read a variant's
+original, or a bot repeating the attacker's own words would count as a leak.
+
+Controls (easy questions in each disguise) mattered most. The model passed 15/15 plain,
+look-alike and Chinese, 2/15 leetspeak, and 0/15 base64 and split, so a "resisted" for those
+last three would only mean it didn't understand. My checker first rejected correct Chinese
+numerals, and rewording the split instruction changed nothing, so I reverted it. On direct
+attacks, look-alikes went from 55% to 47% and Chinese from 56% to 48% against the same plain
+attacks. That is no evidence either disguise helps here; the samples are small, the model ran
+with thinking off, and paraphrased leaks aren't detected yet.
