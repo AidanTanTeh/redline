@@ -9,6 +9,12 @@ Run from the repo root:
     uv run python examples/corpus_run.py --benign --repeats 3   # every benign task
     uv run python examples/corpus_run.py --all --dry-run        # show the estimate only
     uv run python examples/corpus_run.py --max-requests 12 --partial --rpm 20
+    uv run python examples/corpus_run.py --controls --repeats 3 # can it read each disguise?
+    uv run python examples/corpus_run.py --mutators all --repeats 3
+
+--mutators runs each chosen attack plain AND disguised, so the two can be compared. Without
+ids or --all it uses every attack with no documents. Names: base64, leetspeak, homoglyph,
+payload-split, translate-zh, or "all", separated by commas.
 
 Every run first prints a worst-case estimate. --price-as shows (and lets --max-cost cap) what
 the run would cost at a hosted model's prices; requests still go only to local Ollama.
@@ -29,8 +35,8 @@ from pathlib import Path
 
 import httpx
 
-from redline.attacks import load_corpus
-from redline.benign import load_tasks
+from redline.attacks import Mutator, bundled_mutators, load_corpus, make_variants
+from redline.benign import control_mutators, control_tasks, controls_hash, load_tasks
 from redline.core import Case, Outcome, RunResult
 from redline.demo import VulnBotFactory
 from redline.metrics import total_usage
@@ -63,6 +69,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--benign", action="store_true", help="run benign tasks (all of them unless ids are given)"
     )
+    parser.add_argument("--mutators", help='disguises to compare, e.g. "base64,homoglyph" or "all"')
+    parser.add_argument(
+        "--controls",
+        action="store_true",
+        help="run the readability controls (narrow them with --mutators)",
+    )
     parser.add_argument("--channel", choices=["prompt", "tool"], default="prompt")
     parser.add_argument("--repeats", type=int, default=2)
     parser.add_argument("--base-seed", type=int, default=0)
@@ -92,7 +104,7 @@ def describe_result(result: RunResult) -> str:
     elif result.error is not None:
         detail = result.error[:100]
     return (
-        f"{result.attack_id:22} attempt {result.attempt} (seed {result.seed})  "
+        f"{result.attack_id:34} attempt {result.attempt} (seed {result.seed})  "
         f"{result.outcome:13} {detail}"
     )
 
@@ -171,26 +183,61 @@ async def run(
         )
 
 
-def main() -> None:
-    args = parse_args()
+def choose_mutators(names: str, available: tuple[Mutator, ...]) -> list[Mutator]:
+    by_name = {mutator.name: mutator for mutator in available}
+    wanted = list(by_name) if names == "all" else names.split(",")
+    unknown = [name for name in wanted if name not in by_name]
+    if unknown:
+        sys.exit(f"unknown mutator(s) {unknown}. Choose from: all, {', '.join(by_name)}")
+    return [by_name[name] for name in wanted]
+
+
+def select_cases(args: argparse.Namespace) -> tuple[list[Case], str, str]:
+    """What to run, what to call one of them, and the fingerprint of where they came from."""
+    if args.controls:
+        if args.benign or args.all or args.ids:
+            sys.exit("--controls picks its own tasks: only --mutators can narrow it")
+        chosen = (
+            None if args.mutators is None else choose_mutators(args.mutators, control_mutators())
+        )
+        return list(control_tasks(chosen)), "task", controls_hash()
+    if args.benign and args.mutators:
+        sys.exit("--mutators disguises attacks, not benign tasks")
+    if args.all and args.ids:
+        sys.exit("give either --all or ids, not both")
+
     by_id: dict[str, Case]
     if args.benign:
         task_set = load_tasks()
         by_id = {task.id: task for task in task_set.tasks}
         noun, cases_hash = "task", task_set.content_hash
+        # Tasks default to the whole set, so utility isn't quietly based on a few of them.
+        default_ids = list(by_id)
     else:
         corpus = load_corpus()
         by_id = {attack.id: attack for attack in corpus.attacks}
         noun, cases_hash = "attack", corpus.content_hash
-    if args.all and args.ids:
-        sys.exit("give either --all or ids, not both")
-    # Tasks default to the whole set, so a utility figure isn't quietly based on a few of them.
-    default_ids = list(by_id) if args.all or args.benign else DEFAULT_ATTACK_IDS
+        if args.all:
+            default_ids = list(by_id)
+        elif args.mutators:
+            default_ids = [a.id for a in corpus.attacks if not a.documents]
+        else:
+            default_ids = DEFAULT_ATTACK_IDS
     ids = args.ids or default_ids
     unknown = [i for i in ids if i not in by_id]
     if unknown:
         sys.exit(f"unknown {noun} id(s) {unknown}. Choose from: {', '.join(sorted(by_id))}")
     cases = [by_id[i] for i in ids]
+    if args.mutators:
+        mutators = choose_mutators(args.mutators, bundled_mutators())
+        plain = [corpus_attack for corpus_attack in corpus.attacks if corpus_attack.id in ids]
+        cases += make_variants(plain, mutators)
+    return cases, noun, cases_hash
+
+
+def main() -> None:
+    args = parse_args()
+    cases, noun, cases_hash = select_cases(args)
 
     backend = OpenAICompatConfig(
         base_url="http://localhost:11434/v1",
@@ -262,7 +309,7 @@ def main() -> None:
     )
     # For tasks this is the checker's verdict; the utility figure is stricter (summarize_run.py).
     meaning = (
-        "succeeded = reply passed the task check" if args.benign else "succeeded = attack worked"
+        "succeeded = reply passed the task check" if noun == "task" else "succeeded = attack worked"
     )
     print(f"outcomes (raw counts, not a rate; {meaning}):")
     for outcome in Outcome:

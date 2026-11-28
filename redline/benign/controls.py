@@ -4,6 +4,8 @@ A disguised attack that "resisted" means nothing if the target can't read the di
 controls measure that: a target that answers them in base64 can read base64.
 """
 
+import hashlib
+import json
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -29,6 +31,12 @@ def control_mutators() -> tuple[Mutator, ...]:
     text_only = [m for m in bundled_mutators() if not isinstance(m, TranslationMutator)]
     files = sorted(CONTROL_TRANSLATIONS_DIR.glob("*.yaml"))
     return (*text_only, *(TranslationMutator(load_translation(path)) for path in files))
+
+
+def controls_hash() -> str:
+    """Fingerprint of every shipped control, to record with a run of them."""
+    texts = json.dumps([task.model_dump(mode="json") for task in control_tasks()], sort_keys=True)
+    return hashlib.sha256(texts.encode("utf-8")).hexdigest()
 
 
 def control_tasks(mutators: Sequence[Mutator] | None = None) -> tuple[BenignTask, ...]:

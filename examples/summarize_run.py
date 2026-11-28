@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Any
 
 from redline.attacks import bundled_mutators, load_corpus, make_variants
-from redline.benign import load_tasks
+from redline.benign import control_tasks, controls_hash, load_tasks
 from redline.core import Attack, BenignTask, Case, Outcome, RunResult
 from redline.metrics import (
     GroupStats,
@@ -167,6 +167,20 @@ def print_utility(report: RunReport, tasks: Sequence[BenignTask]) -> None:
         )
 
 
+def print_controls(results: Sequence[RunResult], tasks: Sequence[BenignTask]) -> None:
+    """How often the target answered the easy questions, per disguise."""
+    groups: dict[str, list[RunResult]] = {}
+    for result in results:
+        name = result.attack_id.partition("--")[2] or "plain"
+        groups.setdefault(name, []).append(result)
+    print(f"\n{'control':16} {'passed':>7}  " + outcome_headings("done"))
+    for name, members in sorted(groups.items(), key=lambda item: item[0] != "plain"):
+        counts = summarize_utility(members, tasks).overall.counts
+        passed = f"{counts[Outcome.SUCCEEDED]}/{len(members)}"
+        print(f"{name:16} {passed:>7}  {outcome_counts(counts)}")
+    print("A disguise the target often fails here can't be judged by its attack results.")
+
+
 def print_usage(report: RunReport) -> None:
     used = total_usage(report.results)
     if used.attempts and used.unrecorded_attempts == used.attempts and not used.requests:
@@ -239,6 +253,10 @@ def main() -> None:
         warn_if_changed(report, task_set.content_hash, "task set")
         warn_if_definitions_differ(report, task_set.tasks)
         print_utility(report, task_set.tasks)
+    elif run_ids <= {task.id for task in control_tasks()}:
+        warn_if_changed(report, controls_hash(), "controls")
+        warn_if_definitions_differ(report, control_tasks())
+        print_controls(report.results, control_tasks())
     else:
         sys.exit("the result ids are neither all current attacks nor all current tasks")
 
