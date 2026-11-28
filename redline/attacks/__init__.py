@@ -11,6 +11,12 @@ from redline.attacks.mutators import (
     make_variants,
 )
 from redline.attacks.render import render_documents, render_prompt
+from redline.attacks.translation import (
+    Translation,
+    TranslationFile,
+    TranslationMutator,
+    load_translation,
+)
 
 __all__ = [
     "BUNDLED_CORPUS_DIR",
@@ -21,8 +27,12 @@ __all__ = [
     "LeetspeakMutator",
     "Mutator",
     "PayloadSplitMutator",
+    "Translation",
+    "TranslationFile",
+    "TranslationMutator",
     "build_variant",
     "load_corpus",
+    "load_translation",
     "make_variants",
     "render_documents",
     "render_prompt",
