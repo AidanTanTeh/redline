@@ -191,6 +191,12 @@ def print_usage(report: RunReport) -> None:
         f"{used.requests} model calls, {used.input_tokens:,} input + "
         f"{used.output_tokens:,} output tokens"
     )
+    if used.judged:
+        print(
+            f"judge usage: {used.judge_requests} model calls, {used.judge_input_tokens:,} "
+            f"input + {used.judge_output_tokens:,} output tokens, "
+            f"{used.unrecorded_verdicts} verdicts unrecorded"
+        )
 
 
 def target_line(target: dict[str, Any]) -> str:

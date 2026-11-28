@@ -1,4 +1,4 @@
-from redline.core import Outcome, RunResult, TargetResponse, Usage
+from redline.core import DetectionResult, Outcome, RunResult, TargetResponse, Usage
 from redline.metrics import total_usage
 
 
@@ -57,6 +57,37 @@ def test_missing_and_partial_usage_is_flagged_but_known_parts_are_kept() -> None
     assert (total.requests, total.input_tokens, total.output_tokens) == (2, 50, 0)
     assert (total.attempts, total.unrecorded_attempts) == (3, 3)
     assert not total.complete
+
+
+def judged(usage: Usage | None) -> RunResult:
+    target = Usage(requests=1, input_tokens=100, output_tokens=10)
+    canary = DetectionResult(detector="canary", triggered=False)
+    verdict = DetectionResult(detector="judge", triggered=False, usage=usage)
+    return answered(target).model_copy(update={"detections": (canary, verdict)})
+
+
+def test_judge_usage_is_added_up_apart_from_the_targets() -> None:
+    one = Usage(requests=1, input_tokens=500, output_tokens=40)
+    total = total_usage([judged(one), judged(one)])
+
+    assert (total.requests, total.input_tokens, total.output_tokens) == (2, 200, 20)
+    assert (total.judge_requests, total.judge_input_tokens, total.judge_output_tokens) == (
+        2,
+        1000,
+        80,
+    )
+    assert total.judged and total.complete
+
+
+def test_a_verdict_without_usage_makes_the_total_incomplete() -> None:
+    total = total_usage([judged(None), judged(Usage(requests=1, input_tokens=5))])
+    assert (total.judge_requests, total.unrecorded_verdicts) == (1, 2)
+    assert total.judged and not total.complete
+
+
+def test_a_run_without_a_judge_reports_no_judge_usage() -> None:
+    total = total_usage([answered(Usage(requests=1, input_tokens=1, output_tokens=1))])
+    assert not total.judged and total.complete
 
 
 def test_a_retried_attempt_is_not_complete() -> None:

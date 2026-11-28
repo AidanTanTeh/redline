@@ -141,6 +141,13 @@ def print_estimate(estimate: RunEstimate, price_name: str) -> None:
         f"worst case (a ceiling guess, usually far above real use): {estimate.requests} model "
         f"calls, {size} (retries not included)"
     )
+    if estimate.judge_requests:
+        # The calls and cost above include the judge; the tokens above are the target's.
+        print(
+            f"  including the judge: {estimate.judge_requests} calls, "
+            f"{estimate.judge_input_tokens:,} input + "
+            f"{estimate.judge_output_tokens:,} output tokens"
+        )
     if estimate.seconds is None:
         print("time: unknown (no earlier run with these settings)")
     else:
@@ -155,10 +162,15 @@ def print_usage(report: RunReport, pricing: Pricing, price_name: str) -> None:
         f"{used.input_tokens:,} input + {used.output_tokens:,} output tokens, ${cost:.4f} at "
         f"{price_name} prices"
     )
+    if used.judged:
+        print(
+            f"  judge (not in the figures above): {used.judge_requests} model calls, "
+            f"{used.judge_input_tokens:,} input + {used.judge_output_tokens:,} output tokens"
+        )
     if not used.complete:
         print(
-            f"  not recorded: {used.unrecorded_attempts} of {used.attempts} attempts and "
-            f"{used.failed_tries} failed tries"
+            f"  not recorded: {used.unrecorded_attempts} of {used.attempts} attempts, "
+            f"{used.failed_tries} failed tries and {used.unrecorded_verdicts} judge verdicts"
         )
 
 
