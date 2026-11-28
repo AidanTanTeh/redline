@@ -19,7 +19,8 @@ def everything_sent() -> tuple[Attack, ...]:
 def everything_an_attack_says(attack: Attack) -> list[str]:
     """Every piece of text in an attack that could contain a URL or address."""
     wanted = attack.success_tool_call.arguments.values() if attack.success_tool_call else ()
-    return [attack.prompt, *(d.content for d in attack.documents), *wanted]
+    goal = [attack.judge_goal] if attack.judge_goal else []
+    return [attack.prompt, *(d.content for d in attack.documents), *wanted, *goal]
 
 
 def test_bundled_corpus_covers_every_category() -> None:
@@ -57,6 +58,16 @@ def test_every_indirect_attack_has_an_innocent_question_and_a_document() -> None
     for attack in indirect:
         assert attack.documents, attack.id
         assert "password" not in attack.prompt.lower(), f"{attack.id}: question must be innocent"
+
+
+def test_judge_only_attacks_never_depend_on_the_secret() -> None:
+    # They measure what exact matching can't: a planted claim, with nothing secret to leak.
+    judged = [a for a in load_corpus().attacks if a.needs_judge]
+    assert len(judged) == 5
+    for attack in judged:
+        assert attack.category is AttackCategory.INDIRECT_INJECTION, attack.id
+        assert "false-claim" in attack.tags and not attack.needs_tools, attack.id
+        assert "password" not in render_prompt(attack).lower(), attack.id
 
 
 def test_no_attack_text_contains_the_canary_prefix() -> None:
