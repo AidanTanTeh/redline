@@ -1,7 +1,7 @@
 """Attack success rate (ASR) per attack, per category and overall."""
 
 from collections import Counter, defaultdict
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from statistics import fmean
 
 from redline.core import Attack, AttackCategory, Outcome, RedlineModel, RunResult
@@ -76,7 +76,8 @@ class AsrSummary(RedlineModel):
     attacks: tuple[AttackStats, ...]
 
 
-def _group(attacks: Sequence[AttackStats]) -> GroupStats:
+def group_stats(attacks: Sequence[AttackStats]) -> GroupStats:
+    """The combined rate of some attacks."""
     counts = {outcome: sum(a.counts[outcome] for a in attacks) for outcome in Outcome}
     rates = [a.asr for a in attacks if a.asr is not None]
     broken = sum(1 for a in attacks if a.counts[Outcome.SUCCEEDED])
@@ -107,26 +108,43 @@ def _group(attacks: Sequence[AttackStats]) -> GroupStats:
     )
 
 
-def summarize(results: Sequence[RunResult], attacks: Sequence[Attack]) -> AsrSummary:
-    """Turn one run's results into rates. `attacks` supplies each attack's category.
-
-    Raises ValueError rather than produce a number that mixes things that aren't comparable.
-    Attacks with no results are ignored, so passing the whole corpus is fine.
-    """
-    by_id = {a.id: a for a in attacks}
-    config_hash = check_run(results, by_id.keys(), "attack")
-
+def attack_stats(
+    results: Sequence[RunResult], attacks: Mapping[str, Attack]
+) -> tuple[AttackStats, ...]:
+    """Count each attack's outcomes, sorted by attack id. `attacks` maps id to definition."""
     outcomes: defaultdict[str, Counter[Outcome]] = defaultdict(Counter)
     for result in results:
         outcomes[result.attack_id][result.outcome] += 1
-    per_attack = tuple(
+    return tuple(
         AttackStats(
             attack_id=attack_id,
-            category=by_id[attack_id].category,
+            category=attacks[attack_id].category,
             counts={outcome: counted[outcome] for outcome in Outcome},
         )
         for attack_id, counted in sorted(outcomes.items())
     )
+
+
+def disguise(attack: Attack) -> str | None:
+    """The mutator that made this attack, or None for a plain one."""
+    return None if attack.variant_of is None else attack.variant_of.mutator
+
+
+def summarize(results: Sequence[RunResult], attacks: Sequence[Attack]) -> AsrSummary:
+    """Turn one run's results into rates. `attacks` supplies each attack's category.
+
+    Raises ValueError rather than produce a number that mixes things that aren't comparable,
+    such as plain attacks with disguised ones. For a run holding both, pass only the plain
+    results here and use `compare_mutators` for the rest. Attacks with no results are
+    ignored, so passing the whole corpus is fine.
+    """
+    by_id = {a.id: a for a in attacks}
+    config_hash = check_run(results, by_id.keys(), "attack")
+    kinds = {disguise(by_id[r.attack_id]) for r in results}
+    if len(kinds) > 1:
+        names = sorted(kind or "plain" for kind in kinds)
+        raise ValueError(f"results mix differently disguised attacks: {names}")
+    per_attack = attack_stats(results, by_id)
 
     categories = []
     for category in AttackCategory:
@@ -136,13 +154,13 @@ def summarize(results: Sequence[RunResult], attacks: Sequence[Attack]) -> AsrSum
                 CategoryStats(
                     category=category,
                     owasp_id=by_id[members[0].attack_id].owasp_id,
-                    stats=_group(members),
+                    stats=group_stats(members),
                 )
             )
 
     return AsrSummary(
         config_hash=config_hash,
-        overall=_group(per_attack),
+        overall=group_stats(per_attack),
         categories=tuple(categories),
         attacks=per_attack,
     )

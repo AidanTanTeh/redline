@@ -1,6 +1,7 @@
 """Redline metrics: turn run results into rates, with their uncertainty."""
 
 from redline.metrics.asr import AsrSummary, AttackStats, CategoryStats, GroupStats, summarize
+from redline.metrics.mutators import MutatorComparison, compare_mutators
 from redline.metrics.stats import Interval, wilson_interval
 from redline.metrics.usage import UsageTotal, total_usage
 from redline.metrics.utility import (
@@ -19,10 +20,12 @@ __all__ = [
     "GroupStats",
     "Interval",
     "KindStats",
+    "MutatorComparison",
     "TaskStats",
     "UsageTotal",
     "UtilityGroup",
     "UtilitySummary",
+    "compare_mutators",
     "run_warnings",
     "summarize",
     "summarize_utility",
